@@ -1,0 +1,1032 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Freelance Billing</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root { --p:#6d4aff; --bg:#f7f7fa; --card:#fff; --text:#1a1a2e; --muted:#6b6b80; --border:#e4e4ef; --danger:#d64545; --good:#2e9e5b; }
+  * { box-sizing:border-box; margin:0; padding:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
+  body { background:var(--bg); color:var(--text); }
+  .hidden { display:none !important; }
+
+  #login-screen { max-width:380px; margin:12vh auto; background:var(--card); padding:32px; border-radius:16px; box-shadow:0 4px 24px rgba(0,0,0,.06); }
+  #login-screen h1 { font-size:22px; margin-bottom:4px; }
+  #login-screen p { color:var(--muted); font-size:14px; margin-bottom:24px; }
+  #login-screen input { width:100%; padding:12px 14px; border:1px solid var(--border); border-radius:10px; margin-bottom:12px; font-size:15px; }
+  #login-error { color:var(--danger); font-size:13px; margin-bottom:12px; min-height:16px; }
+
+  header { background:var(--p); color:#fff; padding:14px 20px; display:flex; justify-content:space-between; align-items:center; }
+  header h1 { font-size:18px; }
+  #logout-btn { background:rgba(255,255,255,.15); border:none; color:#fff; padding:7px 14px; border-radius:8px; cursor:pointer; font-size:13px; }
+  nav { display:flex; gap:4px; background:var(--card); border-bottom:1px solid var(--border); overflow-x:auto; padding:0 12px; }
+  nav button { background:none; border:none; padding:14px 14px; font-size:14px; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent; white-space:nowrap; }
+  nav button.active { color:var(--p); border-bottom-color:var(--p); font-weight:600; }
+  main { max-width:1000px; margin:0 auto; padding:20px 16px 80px; }
+  .view-title { font-size:20px; font-weight:700; margin-bottom:16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
+
+  .btn { background:var(--p); color:#fff; border:none; padding:9px 16px; border-radius:9px; cursor:pointer; font-size:14px; font-weight:500; }
+  .btn.secondary { background:var(--card); color:var(--p); border:1px solid var(--p); }
+  .btn.small { padding:5px 10px; font-size:12px; border-radius:6px; }
+  .btn.tiny { padding:3px 8px; font-size:11px; border-radius:5px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:12px; }
+  input, select, textarea { padding:10px 12px; border:1px solid var(--border); border-radius:8px; font-size:14px; width:100%; background:#fff; }
+  label { display:block; font-size:13px; font-weight:600; margin-bottom:4px; color:var(--muted); }
+  .form-row { display:flex; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+  .form-row > div { flex:1; min-width:140px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th { text-align:left; color:var(--muted); font-size:12px; text-transform:uppercase; padding:8px; border-bottom:2px solid var(--border); }
+  td { padding:10px 8px; border-bottom:1px solid var(--border); vertical-align:middle; }
+  .row-actions { display:flex; gap:6px; justify-content:flex-end; }
+  .empty { text-align:center; color:var(--muted); padding:40px 0; font-size:14px; }
+  .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:#1a1a2e; color:#fff; padding:10px 20px; border-radius:10px; font-size:14px; opacity:0; transition:opacity .3s; pointer-events:none; z-index:99; }
+  .toast.show { opacity:1; }
+
+  /* ---------- WEEKLY GRID ---------- */
+  .week-nav { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; flex-wrap:wrap; }
+  .week-label { font-size:16px; font-weight:600; }
+  .grid-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  table.wgrid { border-collapse:separate; border-spacing:0; min-width:680px; font-size:13px; }
+  table.wgrid th { padding:6px 4px; text-align:center; font-size:11px; border-bottom:2px solid var(--border); background:#fafafe; }
+  table.wgrid th.rowhead { text-align:left; min-width:180px; }
+  table.wgrid td { padding:0; border-bottom:1px solid var(--border); }
+  table.wgrid td.rowhead { padding:8px 10px; border-right:1px solid var(--border); background:#fafafe; }
+  table.wgrid td.total, table.wgrid th.total { border-left:2px solid var(--border); background:#fafafe; font-weight:600; text-align:center; padding:8px 6px; }
+  .cell-input { width:100%; min-width:52px; border:none; border-radius:0; padding:9px 4px; text-align:center; font-size:13px; background:transparent; }
+  .cell-input:focus { outline:2px solid var(--p); outline-offset:-2px; background:#fff; }
+  .cell-input.filled { background:#f0edff; font-weight:600; }
+  .today-col { background:#fbfaff; }
+  .tab-switch { display:flex; gap:0; margin-bottom:16px; border:1px solid var(--border); border-radius:9px; overflow:hidden; width:fit-content; }
+  .tab-switch button { background:var(--card); border:none; padding:8px 18px; font-size:13px; cursor:pointer; color:var(--muted); }
+  .tab-switch button.active { background:var(--p); color:#fff; font-weight:600; }
+  .close-btn { border:none; background:transparent; color:var(--muted); cursor:pointer; font-size:13px; padding:2px 6px; border-radius:4px; line-height:1; }
+  .close-btn:hover { color:var(--danger); background:#fdeeee; }
+
+  /* ---------- EXPENSES ---------- */
+  .exp-cat { display:inline-block; font-size:11px; font-weight:600; padding:2px 8px; border-radius:20px; background:#f0edff; color:var(--p); text-transform:uppercase; letter-spacing:.3px; }
+  .exp-cat.materials { background:#e8f3fd; color:#1a6fc4; }
+  .exp-cat.subcontractor { background:#fdf3e3; color:#b07d10; }
+  .exp-cat.deposit { background:#e8f8ee; color:#1f8a4c; }
+  .exp-cat.other { background:#f2eefd; color:#6d4aff; }
+  .receipt-thumb { width:44px; height:44px; object-fit:cover; border-radius:6px; border:1px solid var(--border); cursor:pointer; background:#fafafe; }
+  .receipt-icon { width:44px; height:44px; display:flex; align-items:center; justify-content:center; border-radius:6px; border:1px solid var(--border); cursor:pointer; background:#fafafe; font-size:18px; color:var(--muted); }
+  .exp-total-pos { color:var(--text); font-weight:600; }
+  .exp-total-neg { color:var(--good); font-weight:600; }
+  .week-header-row { display:flex; justify-content:space-between; align-items:center; padding:10px 12px; background:#fafafe; border-bottom:2px solid var(--border); font-weight:600; flex-wrap:wrap; gap:6px; }
+  #receipt-modal { position:fixed; inset:0; background:rgba(20,20,35,.85); display:flex; align-items:center; justify-content:center; z-index:200; padding:20px; }
+  #receipt-modal img, #receipt-modal iframe { max-width:92vw; max-height:85vh; border-radius:8px; background:#fff; }
+  #receipt-modal .modal-close { position:absolute; top:16px; right:20px; color:#fff; font-size:28px; cursor:pointer; background:none; border:none; }
+  .file-pick { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .file-pick input[type=file] { display:none; }
+  .file-pill { display:inline-flex; align-items:center; gap:6px; background:#f0edff; color:var(--p); border-radius:8px; padding:6px 10px; font-size:12px; max-width:280px; }
+  .file-pill span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .file-pill button { border:none; background:none; color:var(--danger); cursor:pointer; font-weight:700; font-size:14px; padding:0 2px; }
+
+  @media (max-width:600px){
+    .hide-sm { display:none; }
+    table.wgrid { min-width:540px; font-size:12px; }
+    .cell-input { min-width:42px; padding:8px 2px; }
+    table.wgrid th.rowhead { min-width:120px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="login-screen">
+  <h1>Freelance Billing</h1>
+  <p>Sign in to your workspace</p>
+  <div id="login-error"></div>
+  <input type="email" id="login-email" placeholder="Email">
+  <input type="password" id="login-password" placeholder="Password">
+  <button class="btn" style="width:100%" onclick="handleLogin()">Sign In</button>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <h1>Freelance Billing</h1>
+    <button id="logout-btn" onclick="handleLogout()">Log out</button>
+  </header>
+  <nav>
+    <button data-view="time" class="active">Time</button>
+    <button data-view="clients">Clients</button>
+    <button data-view="expenses">Expenses</button>
+    <button data-view="estimates">Estimates</button>
+    <button data-view="invoices">Invoices</button>
+  </nav>
+  <main>
+    <div id="view-time"></div>
+    <div id="view-clients" class="hidden"></div>
+    <div id="view-expenses"></div>
+    <div id="view-estimates" class="hidden"><div class="empty">Estimates — coming after expenses.</div></div>
+    <div id="view-invoices" class="hidden"><div class="empty">Invoicing &amp; receipts PDF — final step.</div></div>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ==================================================================
+// CONFIG — paste YOUR values from Supabase Dashboard → Settings → API
+// ==================================================================
+const SUPABASE_URL = 'https://oexgfphcwztifchjsehr';
+const SUPABASE_ANON_KEY = 'sb_publishable_25kmLQ0NXu1Ks3XkhSXKsA_ITOd8beJ';
+
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+let timeTab = 'week';
+let weekStart = mondayOf(new Date());
+let pendingSaves = new Map();
+let expTab = 'week';
+let expFilterProject = '';
+
+const EXP_CATEGORIES = ['Materials', 'Subcontractor', 'Deposit', 'Other'];
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2200);
+}
+function mondayOf(d) {
+  const x = new Date(d); x.setHours(0,0,0,0);
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x;
+}
+function isoDate(d) { return d.toISOString().slice(0,10); }
+function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function fmtDate(d) { return d ? new Date(d + 'T00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'}) : ''; }
+function fmtDateFull(d) { return d ? new Date(d + 'T00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric',year:'numeric'}) : ''; }
+function fmtMoney(n) { return '$' + Number(n || 0).toFixed(2); }
+function fmtHours(min) { const h = min / 60; return Number.isInteger(h) ? h + ':00' : h.toFixed(2); }
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function catClass(c) { return String(c||'other').toLowerCase().replace(/[^a-z]/g,''); }
+
+async function handleLogin() {
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  const err = document.getElementById('login-error');
+  const { error } = await db.auth.signInWithPassword({ email, password });
+  if (error) { err.textContent = error.message; return; }
+}
+async function handleLogout() { await db.auth.signOut(); }
+db.auth.onAuthStateChange((event) => {
+  const logged = event === 'SIGNED_IN';
+  document.getElementById('login-screen').classList.toggle('hidden', logged);
+  document.getElementById('app').classList.toggle('hidden', !logged);
+  if (logged) { loadAll(); }
+});
+
+document.querySelectorAll('nav button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    ['time','clients','expenses','estimates','invoices'].forEach(v => {
+      document.getElementById('view-' + v).classList.toggle('hidden', v !== btn.dataset.view);
+    });
+    if (btn.dataset.view === 'expenses') renderExpenses();
+  });
+});
+
+// ---------------- data cache ----------------
+let clients = [], projects = [], tasks = [], timeEntries = [], expenses = [], receiptFiles = [];
+async function loadAll() {
+  [clients, projects, tasks, timeEntries, expenses, receiptFiles] =
+    await Promise.all([fetchClients(), fetchProjects(), fetchTasks(), fetchTime(), fetchExpenses(), fetchReceipts()]);
+  renderTime(); renderClients(); renderExpenses();
+}
+async function fetchClients() {
+  const { data, error } = await db.from('clients').select('*').order('name');
+  if (error) { toast('clients: ' + error.message); return []; }
+  return data || [];
+}
+async function fetchProjects() {
+  const { data, error } = await db.from('projects').select('*').order('name');
+  if (error) { toast('projects: ' + error.message); return []; }
+  return data || [];
+}
+async function fetchTasks() {
+  const { data, error } = await db.from('tasks').select('*').order('name');
+  if (error) { toast('tasks: ' + error.message); return []; }
+  return data || [];
+}
+async function fetchTime() {
+  const { data, error } = await db.from('time_entries').select('*').order('entry_date', { ascending: false }).limit(500);
+  if (error) { toast('time: ' + error.message); return []; }
+  return data || [];
+}
+async function fetchExpenses() {
+  const { data, error } = await db.from('expenses').select('*').order('expense_date', { ascending: false }).limit(500);
+  if (error) { toast('expenses: ' + error.message); return []; }
+  return data || [];
+}
+async function fetchReceipts() {
+  const { data, error } = await db.from('receipt_files').select('*');
+  if (error) { toast('receipts: ' + error.message); return []; }
+  return data || [];
+}
+function taskById(id) { return tasks.find(t => t.id === id) || null; }
+function projectById(id) { return projects.find(p => p.id === id) || null; }
+function clientById(id) { return clients.find(c => c.id === id) || null; }
+function receiptsFor(expenseId) { return receiptFiles.filter(r => r.expense_id === expenseId); }
+function projectClientName(pid) {
+  const p = projectById(pid);
+  if (!p) return { proj: '—', cli: '—' };
+  const c = clientById(p.client_id);
+  return { proj: p.name, cli: c ? c.name : '—' };
+}
+
+function effectiveRate(entry) {
+  const task = entry.task_id ? taskById(entry.task_id) : null;
+  if (task && task.hourly_rate != null) return Number(task.hourly_rate);
+  const proj = entry.project_id ? projectById(entry.project_id) : null;
+  if (proj && proj.billing_rate != null) return Number(proj.billing_rate);
+  if (proj) { const c = clientById(proj.client_id); if (c && c.billing_rate != null) return Number(c.billing_rate); }
+  return null;
+}
+function taskLabel(task) {
+  const proj = projectById(task.project_id);
+  const cli = proj ? clientById(proj.client_id) : null;
+  return { client: cli ? cli.name : '—', project: proj ? proj.name : '—', task: task.name };
+}
+
+// ==================================================================
+// TIME VIEW
+// ==================================================================
+function renderTime() {
+  const el = document.getElementById('view-time');
+  el.innerHTML = `
+    <div class="view-title">Time Entries
+      <span style="font-size:14px;color:var(--muted)">week: ${weekHours()}h${weekValue()?': '+fmtMoney(weekValue()):''}</span>
+    </div>
+    <div class="tab-switch">
+      <button class="${timeTab==='week'?'active':''}" onclick="setTimeTab('week')">Weekly Grid</button>
+      <button class="${timeTab==='list'?'active':''}" onclick="setTimeTab('list')">Entry List</button>
+    </div>
+    <div id="time-body"></div>`;
+  if (timeTab === 'week') renderWeekGrid(); else renderTimeList();
+}
+function setTimeTab(t) { timeTab = t; renderTime(); }
+
+async function renderWeekGrid() {
+  const body = document.getElementById('time-body');
+  const days = [...Array(7)].map((_, i) => addDays(weekStart, i));
+  const wStart = isoDate(weekStart), wEnd = isoDate(addDays(weekStart, 6));
+
+  timeEntries = await fetchTime();
+  const weekEntries = timeEntries.filter(e => e.entry_date >= wStart && e.entry_date <= wEnd);
+
+  const usedTaskIds = new Set(weekEntries.map(e => e.task_id).filter(Boolean));
+  const gridTasks = tasks.filter(t => {
+    const proj = projectById(t.project_id);
+    const projActive = proj ? proj.active : false;
+    return (t.active && projActive) || usedTaskIds.has(t.id);
+  });
+
+  gridTasks.sort((a,b) => {
+    const la = taskLabel(a), lb = taskLabel(b);
+    return (la.client+la.project+la.task).localeCompare(lb.client+lb.project+lb.task);
+  });
+
+  const todayIso = isoDate(new Date());
+  const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+  let head = `<tr><th class="rowhead">Client / Project / Task</th>`;
+  days.forEach((d,i) => {
+    const isToday = isoDate(d) === todayIso;
+    head += `<th class="${isToday?'today-col':''}">${dayNames[i]}<br><span style="font-weight:400">${fmtDate(isoDate(d))}</span></th>`;
+  });
+  head += `<th class="total">Total</th></tr>`;
+
+  let rows = '';
+  if (!gridTasks.length) {
+    rows = `<tr><td colspan="9" class="empty">Nothing on this week's sheet. Add tasks under Clients, or activate tasks you closed.</td></tr>`;
+  }
+  gridTasks.forEach(t => {
+    const lbl = taskLabel(t);
+    const proj = projectById(t.project_id);
+    const isActive = t.active && proj && proj.active;
+    let cells = '', rowTotal = 0;
+
+    days.forEach((d,i) => {
+      const iso = isoDate(d);
+      const matches = weekEntries.filter(e => e.task_id === t.id && e.entry_date === iso);
+      const mins = matches.reduce((s,e) => s + e.minutes, 0);
+      rowTotal += mins;
+      const hrs = mins ? (mins/60) : '';
+      const isToday = iso === todayIso;
+
+      cells += `<td class="${isToday?'today-col':''}">
+        <input class="cell-input ${hrs?'filled':''}" type="number" step="0.25" min="0" inputmode="decimal"
+          value="${hrs}" placeholder="·"
+          data-task="${t.id}" data-date="${iso}"
+          onfocus="cellFocus(this)" onblur="cellBlur(this)">
+      </td>`;
+    });
+
+    rows += `<tr${isActive?'':' style="opacity:.55"'}>
+      <td class="rowhead">
+        <div style="font-weight:600">${esc(lbl.client)}</div>
+        <div style="color:var(--muted);font-size:12px">${esc(lbl.project)}</div>
+        <div style="color:var(--muted);font-size:11px">${esc(lbl.task)}</div>
+        <div style="margin-top:4px">
+          ${isActive
+            ? `<button class="close-btn" onclick="closeTask('${t.id}')">✕ close</button>`
+            : `<button class="close-btn" onclick="reopenTask('${t.id}')">↺ reopen</button>`}
+        </div>
+      </td>
+      ${cells}
+      <td class="total">${rowTotal ? fmtHours(rowTotal) : '—'}</td>
+    </tr>`;
+  });
+
+  let footCells = '';
+  let grand = 0;
+  days.forEach(d => {
+    const iso = isoDate(d);
+    const mins = weekEntries.filter(e => e.entry_date === iso).reduce((s,e) => s + e.minutes, 0);
+    grand += mins;
+    footCells += `<td class="total">${mins ? fmtHours(mins) : '—'}</td>`;
+  });
+
+  body.innerHTML = `
+    <div class="card">
+      <div class="week-nav">
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn secondary small" onclick="shiftWeek(-1)">← Prev</button>
+          <button class="btn secondary small" onclick="shiftWeek(0)">This Week</button>
+          <button class="btn secondary small" onclick="shiftWeek(1)">Next →</button>
+        </div>
+        <div class="week-label">${fmtDate(wStart)} – ${fmtDate(wEnd)}</div>
+      </div>
+      <div class="grid-wrap">
+        <table class="wgrid">
+          <thead>${head}</thead>
+          <tbody>${rows}</tbody>
+          <tfoot><tr><td class="rowhead" style="font-weight:600;font-size:11px">Daily Total</td>${footCells}<td class="total">${grand?fmtHours(grand):'—'}</td></tr></tfoot>
+        </table>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-top:10px">Hours save automatically when you leave a cell. ✕ close removes a task from current/future sheets; rows with hours this week stay visible (grayed) until the week rolls over.</div>
+    </div>
+    <div class="card">
+      <div style="font-weight:600;margin-bottom:8px">Quick Add (different date / notes)</div>
+      <div class="form-row">
+        <div><label>Date</label><input type="date" id="t-date" value="${todayIso}"></div>
+        <div><label>Hours</label><input type="number" id="t-hours" min="0.25" step="0.25" placeholder="1.5" inputmode="decimal"></div>
+        <div style="flex:3"><label>Task</label><select id="t-task"><option value="">Select task…</option>${taskOptions()}</select></div>
+      </div>
+      <div class="form-row"><div style="flex:3"><label>Notes</label><input type="text" id="t-notes" placeholder="What did you work on?"></div>
+        <div style="align-self:flex-end"><button class="btn" onclick="addTime()">Add Entry</button></div>
+      </div>
+    </div>`;
+}
+
+function shiftWeek(dir) {
+  if (dir === 0) weekStart = mondayOf(new Date());
+  else weekStart = addDays(weekStart, dir * 7);
+  renderWeekGrid();
+}
+
+async function closeTask(taskId) {
+  const { error } = await db.from('tasks').update({ active: false }).eq('id', taskId);
+  if (error) { toast(error.message); return; }
+  tasks = await fetchTasks();
+  renderWeekGrid();
+  toast('Closed — stays on this week only if it has hours');
+}
+async function reopenTask(taskId) {
+  const { error } = await db.from('tasks').update({ active: true }).eq('id', taskId);
+  if (error) { toast(error.message); return; }
+  tasks = await fetchTasks();
+  renderWeekGrid();
+  toast('Task reopened');
+}
+
+function cellFocus(input) { input.dataset.originalValue = input.value; }
+function cellBlur(input) {
+  if (input.dataset.originalValue === input.value.trim()) return;
+  saveCellInternal(input);
+}
+async function saveCellInternal(input) {
+  const key = input.dataset.task + '|' + input.dataset.date;
+  if (pendingSaves.has(key)) return;
+  pendingSaves.set(key, true);
+  try {
+    const taskId = input.dataset.task, date = input.dataset.date;
+    const raw = input.value.trim();
+    const hours = raw === '' ? 0 : parseFloat(raw);
+    if (isNaN(hours) || hours < 0) {
+      toast('Invalid hours');
+      input.value = input.dataset.originalValue || '';
+      return;
+    }
+    const minutes = Math.round(hours * 60);
+    const existing = timeEntries.filter(e => e.task_id === taskId && e.entry_date === date);
+
+    if (minutes === 0) {
+      for (const e of existing) await db.from('time_entries').delete().eq('id', e.id);
+    } else if (existing.length >= 1) {
+      const { error } = await db.from('time_entries').update({ minutes }).eq('id', existing[0].id);
+      if (error) { toast(error.message); return; }
+      for (const e of existing.slice(1)) await db.from('time_entries').delete().eq('id', e.id);
+    } else {
+      const task = taskById(taskId);
+      const { error } = await db.from('time_entries').insert({
+        entry_date: date, minutes, project_id: task ? task.project_id : null, task_id: taskId, notes: ''
+      });
+      if (error) { toast(error.message); return; }
+    }
+    timeEntries = await fetchTime();
+    renderWeekGrid();
+  } finally {
+    pendingSaves.delete(key);
+  }
+}
+
+function taskOptions() {
+  let out = '';
+  clients.forEach(c => {
+    const cProjects = projects.filter(p => p.client_id === c.id && p.active);
+    cProjects.forEach(p => {
+      const pTasks = tasks.filter(t => t.project_id === p.id && t.active);
+      if (!pTasks.length) return;
+      out += `<optgroup label="${esc(c.name)} — ${esc(p.name)}">`;
+      pTasks.forEach(t => {
+        const rate = t.hourly_rate ?? p.billing_rate ?? c.billing_rate;
+        out += `<option value="${t.id}">${esc(t.name)}${rate!=null?' — '+fmtMoney(rate)+'/hr':''}</option>`;
+      });
+      out += '</optgroup>';
+    });
+  });
+  return out;
+}
+function renderTimeList() {
+  const body = document.getElementById('time-body');
+  const byDate = {};
+  timeEntries.forEach(t => { (byDate[t.entry_date] = byDate[t.entry_date] || []).push(t); });
+  const dates = Object.keys(byDate).sort().reverse();
+
+  let rowsHtml = '';
+  if (!dates.length) rowsHtml = '<div class="empty">No time entries yet.</div>';
+  dates.forEach(d => {
+    const total = byDate[d].reduce((s,t) => s + t.minutes, 0);
+    const money = byDate[d].reduce((s,t) => { const r = effectiveRate(t); return s + (r!=null?(t.minutes/60)*r:0); }, 0);
+    const tds = byDate[d].map(t => {
+      const task = t.task_id ? taskById(t.task_id) : null;
+      const proj = t.project_id ? projectById(t.project_id) : null;
+      const rate = effectiveRate(t);
+      return `<tr>
+        <td>${task?esc(task.name):'—'} ${proj?`<small style="color:var(--muted)">(${esc(proj.name)})</small>`:''}</td>
+        <td class="hide-sm">${esc(t.notes||'')}</td>
+        <td style="white-space:nowrap">${fmtHours(t.minutes)}</td>
+        <td class="hide-sm" style="text-align:right;white-space:nowrap">${rate!=null?fmtMoney((t.minutes/60)*rate):'—'}</td>
+        <td style="text-align:right"><button class="btn small secondary" onclick="deleteTime('${t.id}')">✕</button></td>
+      </tr>`;
+    }).join('');
+    rowsHtml += `<div class="card"><table>
+      <thead><tr><th>Task / Project</th><th>Notes</th><th>Time</th><th style="text-align:right">Amount</th><th></th></tr></thead>
+      <tbody>
+        <tr><td colspan="5" style="font-weight:600;background:#fafafe;border-bottom:2px solid var(--border)">${fmtDateFull(d)} — ${fmtHours(total)}${money?' · '+fmtMoney(money):''}</td></tr>
+        ${tds}
+      </tbody></table></div>`;
+  });
+
+  body.innerHTML = `
+    <div class="card">
+      <div class="form-row">
+        <div><label>Date</label><input type="date" id="t-date" value="${isoDate(new Date())}"></div>
+        <div><label>Hours</label><input type="number" id="t-hours" min="0.25" step="0.25" placeholder="1.5" inputmode="decimal"></div>
+        <div style="flex:3"><label>Task</label><select id="t-task"><option value="">Select task…</option>${taskOptions()}</select></div>
+      </div>
+      <div class="form-row"><div style="flex:3"><label>Notes</label><input type="text" id="t-notes" placeholder="What did you work on?"></div>
+        <div style="align-self:flex-end"><button class="btn" onclick="addTime()">Add Entry</button></div>
+      </div>
+    </div>
+    ${rowsHtml}`;
+}
+function weekHours() {
+  const wStart = isoDate(weekStart), wEnd = isoDate(addDays(weekStart,6));
+  return (timeEntries.filter(e => e.entry_date>=wStart && e.entry_date<=wEnd).reduce((s,e)=>s+e.minutes,0)/60).toFixed(1);
+}
+function weekValue() {
+  const wStart = isoDate(weekStart), wEnd = isoDate(addDays(weekStart,6));
+  return timeEntries.filter(e => e.entry_date>=wStart && e.entry_date<=wEnd)
+    .reduce((s,e)=>{const r=effectiveRate(e);return s+(r!=null?(e.minutes/60)*r:0);},0);
+}
+async function addTime() {
+  const date = document.getElementById('t-date').value;
+  const hours = parseFloat(document.getElementById('t-hours').value);
+  const taskSel = document.getElementById('t-task').value;
+  const notes = document.getElementById('t-notes').value.trim();
+  if (!date || !hours || hours <= 0) { toast('Date and hours required'); return; }
+  if (!taskSel) { toast('Select a task'); return; }
+  const task = taskById(taskSel);
+  if (!task) { toast('Task not found'); return; }
+  const { error } = await db.from('time_entries').insert({
+    entry_date: date, minutes: Math.round(hours*60), project_id: task.project_id, task_id: task.id, notes
+  });
+  if (error) { toast(error.message); return; }
+  timeEntries = await fetchTime();
+  weekStart = mondayOf(new Date(date + 'T00:00'));
+  renderTime(); toast('Time entry saved');
+}
+async function deleteTime(id) {
+  if (!confirm('Delete this time entry?')) return;
+  const { error } = await db.from('time_entries').delete().eq('id', id);
+  if (error) { toast(error.message); return; }
+  timeEntries = timeEntries.filter(t => t.id !== id); renderTime();
+}
+
+// ==================================================================
+// EXPENSES VIEW
+// ==================================================================
+function renderExpenses() {
+  const el = document.getElementById('view-expenses');
+  el.innerHTML = `
+    <div class="view-title">Expenses
+      <span style="font-size:14px;color:var(--muted)">${expenses.length} total · ${fmtMoney(sumExpenses(expenses))}</span>
+    </div>
+    <div class="tab-switch">
+      <button class="${expTab==='week'?'active':''}" onclick="setExpTab('week')">Weekly</button>
+      <button class="${expTab==='project'?'active':''}" onclick="setExpTab('project')">By Project</button>
+    </div>
+    <div id="exp-body"></div>`;
+  if (expTab === 'week') renderExpWeekly(); else renderExpByProject();
+}
+function setExpTab(t) { expTab = t; renderExpenses(); }
+function sumExpenses(list) { return list.reduce((s,e) => s + Number(e.amount||0), 0); }
+
+function expenseProjectOptions(selectedId) {
+  let out = '<option value="">Select project…</option>';
+  clients.forEach(c => {
+    const cProjects = projects.filter(p => p.client_id === c.id);
+    cProjects.forEach(p => {
+      out += `<option value="${p.id}"${p.id===selectedId?' selected':''}>${esc(c.name)} — ${esc(p.name)}</option>`;
+    });
+  });
+  return out;
+}
+
+// ---- new/edit expense form ----
+let editingExpenseId = null;
+let stagedFiles = [];   // [{file, name}]
+function renderExpenseForm() {
+  return `
+  <div class="card" id="exp-form">
+    <div style="font-weight:600;margin-bottom:8px" id="exp-form-title">Add Expense</div>
+    <div class="form-row">
+      <div><label>Date</label><input type="date" id="e-date" value="${isoDate(new Date())}"></div>
+      <div><label>Project</label><select id="e-project">${expenseProjectOptions('')}</select></div>
+    </div>
+    <div class="form-row">
+      <div><label>Vendor</label><input type="text" id="e-vendor" placeholder="Where purchased"></div>
+      <div><label>Amount ($)</label><input type="number" id="e-amount" step="0.01" placeholder="123.45" inputmode="decimal"></div>
+      <div><label>Category</label><select id="e-category">
+        ${EXP_CATEGORIES.map(c => `<option value="${c}">${c}</option>`).join('')}
+      </select></div>
+    </div>
+    <div class="form-row">
+      <div style="flex:3"><label>Notes (use for "Other" details)</label><input type="text" id="e-notes" placeholder="Optional"></div>
+    </div>
+    <div class="form-row">
+      <div style="flex:3"><label>Receipt</label>
+        <div class="file-pick">
+          <input type="file" id="e-file" accept="image/*,.pdf" capture="environment" multiple>
+          <button class="btn secondary small" type="button" onclick="document.getElementById('e-file').click()" id="e-file-btn">📷 Camera / 📁 Upload</button>
+          <div id="e-staged" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn" onclick="saveExpense()">Save Expense</button>
+      <button class="btn secondary hidden" id="e-cancel" onclick="cancelExpenseEdit()">Cancel Edit</button>
+    </div>
+  </div>`;
+}
+function refreshStagedFiles() {
+  const holder = document.getElementById('e-staged');
+  if (!holder) return;
+  holder.innerHTML = stagedFiles.map((f,i) => `
+    <span class="file-pill"><span>${esc(f.name)}</span><button onclick="removeStaged(${i})">✕</button></span>`).join('');
+}
+function removeStaged(i) { stagedFiles.splice(i,1); refreshStagedFiles(); }
+function cancelExpenseEdit() {
+  editingExpenseId = null; stagedFiles = [];
+  const f = document.getElementById('e-file'); if (f) f.value = '';
+  document.getElementById('exp-form-title').textContent = 'Add Expense';
+  document.getElementById('e-cancel').classList.add('hidden');
+  resetExpenseForm();
+}
+function resetExpenseForm() {
+  ['e-vendor','e-amount','e-notes'].forEach(i => { const el = document.getElementById(i); if (el) el.value=''; });
+  const d = document.getElementById('e-date'); if (d) d.value = isoDate(new Date());
+  const c = document.getElementById('e-category'); if (c) c.selectedIndex = 0;
+  const p = document.getElementById('e-project'); if (p) p.selectedIndex = 0;
+  refreshStagedFiles();
+}
+
+// Wire file input events whenever the form is (re)rendered
+function wireExpenseForm() {
+  const input = document.getElementById('e-file');
+  if (!input) return;
+  input.addEventListener('change', () => {
+    for (const f of input.files) stagedFiles.push({ file: f, name: f.name });
+    input.value = '';
+    refreshStagedFiles();
+  });
+}
+
+async function saveExpense() {
+  const date = document.getElementById('e-date').value;
+  const projectId = document.getElementById('e-project').value;
+  const vendor = document.getElementById('e-vendor').value.trim();
+  const amount = parseFloat(document.getElementById('e-amount').value);
+  const category = document.getElementById('e-category').value;
+  const notes = document.getElementById('e-notes').value.trim();
+
+  if (!date) { toast('Date required'); return; }
+  if (!projectId) { toast('Select a project'); return; }
+  if (!vendor) { toast('Vendor required'); return; }
+  if (isNaN(amount)) { toast('Amount required (use negative for deposits)'); return; }
+
+  const proj = projectById(projectId);
+  const payload = {
+    project_id: projectId,
+    client_id: proj ? proj.client_id : null,
+    expense_date: date,
+    vendor, amount, category, notes,
+    updated_at: new Date().toISOString(),
+  };
+
+  let expId = editingExpenseId;
+  if (editingExpenseId) {
+    const { error } = await db.from('expenses').update(payload).eq('id', editingExpenseId);
+    if (error) { toast(error.message); return; }
+  } else {
+    const { data, error } = await db.from('expenses').insert(payload).select('id').single();
+    if (error) { toast(error.message); return; }
+    expId = data.id;
+  }
+
+  // Upload staged receipts
+  for (const sf of stagedFiles) {
+    const path = expId + '/' + Date.now() + '-' + sf.name.replace(/[^a-zA-Z0-9._-]/g,'_');
+    const { error } = await db.storage.from('receipts').upload(path, sf.file, { upsert: true });
+    if (error) { toast('Receipt upload failed: ' + error.message); continue; }
+    const { error: e2 } = await db.from('receipt_files').insert({ expense_id: expId, storage_path: path, filename: sf.name });
+    if (e2) { toast(e2.message); }
+  }
+
+  expenses = await fetchExpenses();
+  receiptFiles = await fetchReceipts();
+  cancelExpenseEdit();
+  renderExpenses();
+  toast('Expense saved');
+}
+
+function editExpense(id) {
+  const e = expenses.find(x => x.id === id); if (!e) return;
+  editingExpenseId = id; stagedFiles = [];
+  document.getElementById('exp-form-title').textContent = 'Edit Expense';
+  document.getElementById('e-cancel').classList.remove('hidden');
+  document.getElementById('e-date').value = e.expense_date;
+  document.getElementById('e-project').value = e.project_id || '';
+  document.getElementById('e-vendor').value = e.vendor || '';
+  document.getElementById('e-amount').value = e.amount;
+  document.getElementById('e-category').value = EXP_CATEGORIES.includes(e.category) ? e.category : 'Other';
+  document.getElementById('e-notes').value = e.notes || '';
+  refreshStagedFiles();
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+async function deleteExpense(id) {
+  const recs = receiptsFor(id);
+  const msg = recs.length
+    ? `Delete this expense and its ${recs.length} receipt file(s)?`
+    : 'Delete this expense?';
+  if (!confirm(msg)) return;
+  for (const r of recs) {
+    await db.storage.from('receipts').remove([r.storage_path]);
+  }
+  const { error } = await db.from('expenses').delete().eq('id', id);
+  if (error) { toast(error.message); return; }
+  expenses = await fetchExpenses();
+  receiptFiles = await fetchReceipts();
+  renderExpenses();
+  toast('Expense deleted');
+}
+
+function expenseReceiptHtml(e) {
+  const recs = receiptsFor(e.id);
+  if (!recs.length) return '<span style="color:var(--muted)">—</span>';
+  return recs.map((r, i) => {
+    if (/\.(jpe?g|png|gif|webp|heic)$/i.test(r.filename) || /\.(jpe?g|png|gif|webp|heic)$/i.test(r.storage_path)) {
+      return `<img class="receipt-thumb" src="receipt-thumb:${r.id}" onclick="openReceipt('${r.id}')" alt="receipt">`;
+    }
+    return `<div class="receipt-icon" onclick="openReceipt('${r.id}')" title="${esc(r.filename)}">📄</div>`;
+  }).join('');
+}
+
+async function openReceipt(receiptId) {
+  const r = receiptFiles.find(x => x.id === receiptId);
+  if (!r) return;
+  const { data } = await db.storage.from('receipts').createSignedUrl(r.storage_path, 3600);
+  if (!data || !data.signedUrl) { toast('Could not load receipt'); return; }
+  const isImg = /\.(jpe?g|png|gif|webp|heic)$/i.test(r.filename) || /\.(jpe?g|png|gif|webp|heic)$/i.test(r.storage_path);
+  const modal = document.createElement('div');
+  modal.id = 'receipt-modal';
+  modal.innerHTML = `<button class="modal-close" onclick="this.parentElement.remove()">×</button>
+    ${isImg ? `<img src="${data.signedUrl}" alt="receipt">`
+            : `<iframe src="${data.signedUrl}" style="width:88vw;height:80vh"></iframe>`}`;
+  modal.addEventListener('click', (ev) => { if (ev.target === modal) modal.remove(); });
+  document.body.appendChild(modal);
+}
+
+// Stub source to avoid fetching every thumbnail eagerly; replaced on demand
+const origThumb = expenseReceiptHtml;
+
+function renderExpWeekly() {
+  const body = document.getElementById('exp-body');
+  body.innerHTML = renderExpenseForm();
+  wireExpenseForm();
+
+  // Resolve thumbnails asynchronously (signed URLs)
+  hydrateThumbs();
+
+  const byWeek = {};
+  expenses.forEach(e => { (byWeek[e.expense_date] = byWeek[e.expense_date] || []).push(e); });
+  // Group by actual Monday-start week
+  const weeks = {};
+  Object.keys(byWeek).forEach(d => {
+    const mon = isoDate(mondayOf(new Date(d + 'T00:00')));
+    (weeks[mon] = weeks[mon] || []).push(...byWeek[d]);
+  });
+  const weekKeys = Object.keys(weeks).sort().reverse();
+
+  if (!weekKeys.length) {
+    body.insertAdjacentHTML('beforeend', '<div class="empty">No expenses yet — add your first one above.</div>');
+    return;
+  }
+
+  weekKeys.forEach(wk => {
+    const list = weeks[wk].sort((a,b) => (a.expense_date < b.expense_date ? 1 : -1));
+    const total = sumExpenses(list);
+    const negTotal = list.filter(e => Number(e.amount) < 0).reduce((s,e) => s + Number(e.amount), 0);
+    const rows = list.map(e => {
+      const pc = projectClientName(e.project_id);
+      return `<tr>
+        <td style="white-space:nowrap">${fmtDate(e.expense_date)}</td>
+        <td>
+          <div>${esc(e.vendor)}</div>
+          ${e.notes ? `<div class="row-sub" style="font-size:11px;color:var(--muted)">${esc(e.notes)}</div>` : ''}
+        </td>
+        <td class="hide-sm"><span class="exp-cat ${catClass(e.category)}">${esc(e.category||'Other')}</span></td>
+        <td class="hide-sm"><div>${esc(pc.proj)}</div><div style="font-size:11px;color:var(--muted)">${esc(pc.cli)}</div></td>
+        <td style="text-align:center">${expenseReceiptHtml(e)}</td>
+        <td style="text-align:right;white-space:nowrap" class="${Number(e.amount)<0?'exp-total-neg':'exp-total-pos'}">${fmtMoney(e.amount)}</td>
+        <td style="text-align:right"><span class="row-actions">
+          <button class="btn tiny secondary" onclick="editExpense('${e.id}')">Edit</button>
+          <button class="btn tiny secondary" onclick="deleteExpense('${e.id}')">✕</button>
+        </span></td>
+      </tr>`;
+    }).join('');
+    body.insertAdjacentHTML('beforeend', `
+      <div class="card" style="padding:0">
+        <table>
+          <thead><tr>
+            <th class="week-header-row" colspan="7" style="border-bottom:2px solid var(--border);padding:0">
+              <span style="padding:10px 12px">Week of ${fmtDate(wk)}</span>
+              <span style="padding:10px 12px">${fmtMoney(total)}${negTotal ? ` <small style="color:var(--good);font-weight:400">(incl. deposits ${fmtMoney(negTotal)})</small>` : ''}</span>
+            </th>
+          </tr>
+          <tr><th>Date</th><th>Vendor</th><th class="hide-sm">Category</th><th class="hide-sm">Project</th><th style="text-align:center">Receipt</th><th style="text-align:right">Amount</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`);
+  });
+}
+
+async function hydrateThumbs() {
+  // Replace receipt-thumb: placeholders with real signed URLs (small list, on demand)
+  const imgs = document.querySelectorAll('img[src^="receipt-thumb:"]');
+  for (const img of imgs) {
+    const rid = img.getAttribute('src').split(':')[1];
+    const r = receiptFiles.find(x => x.id === rid);
+    if (!r) continue;
+    const { data } = await db.storage.from('receipts').createSignedUrl(r.storage_path, 3600);
+    if (data && data.signedUrl) img.src = data.signedUrl;
+  }
+}
+
+function renderExpByProject() {
+  const body = document.getElementById('exp-body');
+  const projOpts = projects.map(p => {
+    const c = clientById(p.client_id);
+    return { id: p.id, label: `${c ? c.name : '—'} — ${p.name}` };
+  }).sort((a,b) => a.label.localeCompare(b.label));
+
+  const sel = projOpts.map(o =>
+    `<option value="${o.id}"${o.id===expFilterProject?' selected':''}>${esc(o.label)}</option>`).join('');
+
+  body.innerHTML = `
+    <div class="card">
+      <label>Filter by project</label>
+      <select onchange="expFilterProject=this.value;renderExpenses()">
+        <option value="">All projects…</option>${sel}
+      </select>
+    </div>`;
+
+  let list = expenses;
+  if (expFilterProject) list = list.filter(e => e.project_id === expFilterProject);
+  if (!list.length) {
+    body.insertAdjacentHTML('beforeend', '<div class="empty">No expenses found${expFilterProject?" for this project":""}.</div>');
+  }
+
+  const groups = {};
+  list.forEach(e => { (groups[e.project_id] = groups[e.project_id] || []).push(e); });
+  Object.keys(groups).sort((a,b) => {
+    const pa = projectClientName(a), pb = projectClientName(b);
+    return (pa.cli + pa.proj).localeCompare(pb.cli + pb.proj);
+  }).forEach(pid => {
+    const pc = projectClientName(pid);
+    const plist = groups[pid].sort((a,b) => (a.expense_date < b.expense_date ? 1 : -1));
+    const total = sumExpenses(plist);
+    const rows = plist.map(e => `<tr>
+      <td style="white-space:nowrap">${fmtDate(e.expense_date)}</td>
+      <td><div>${esc(e.vendor)}</div>${e.notes ? `<div style="font-size:11px;color:var(--muted)">${esc(e.notes)}</div>` : ''}</td>
+      <td class="hide-sm"><span class="exp-cat ${catClass(e.category)}">${esc(e.category||'Other')}</span></td>
+      <td style="text-align:center">${expenseReceiptHtml(e)}</td>
+      <td style="text-align:right;white-space:nowrap" class="${Number(e.amount)<0?'exp-total-neg':'exp-total-pos'}">${fmtMoney(e.amount)}</td>
+      <td style="text-align:right"><span class="row-actions">
+        <button class="btn tiny secondary" onclick="editExpenseSwitchTab('${e.id}')">Edit</button>
+        <button class="btn tiny secondary" onclick="deleteExpense('${e.id}')">✕</button>
+      </span></td>
+    </tr>`).join('');
+    body.insertAdjacentHTML('beforeend', `
+      <div class="card" style="padding:0">
+        <table>
+          <thead><tr>
+            <th colspan="6" class="week-header-row" style="padding:0">
+              <span style="padding:10px 12px">${esc(pc.cli)} — ${esc(pc.proj)}</span>
+              <span style="padding:10px 12px">${fmtMoney(total)}</span>
+            </th>
+          </tr>
+          <tr><th>Date</th><th>Vendor</th><th class="hide-sm">Category</th><th style="text-align:center">Receipt</th><th style="text-align:right">Amount</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`);
+  });
+  hydrateThumbs();
+}
+
+function editExpenseSwitchTab(id) {
+  expTab = 'week';
+  renderExpenses();
+  editExpense(id);
+}
+
+// ==================================================================
+// CLIENTS VIEW (+ projects + tasks)
+// ==================================================================
+function renderClients() {
+  const el = document.getElementById('view-clients');
+  const cards = clients.map(c => {
+    const cProjects = projects.filter(p => p.client_id === c.id);
+    const projBlocks = cProjects.map(p => {
+      const pTasks = tasks.filter(t => t.project_id === p.id);
+      const taskRows = pTasks.map(t => `<tr>
+        <td>${esc(t.name)}${t.hourly_rate?` <small style="color:var(--muted)">${fmtMoney(t.hourly_rate)}/hr</small>`:''}${t.active?'':' <small>(inactive)</small>'}</td>
+        <td style="text-align:right"><span class="row-actions">
+          <button class="btn tiny secondary" onclick="toggleTask('${t.id}', ${!t.active})">${t.active?'Off':'On'}</button>
+          <button class="btn tiny secondary" onclick="deleteTask('${t.id}')">✕</button></span></td></tr>`).join('');
+      return `<div style="margin-bottom:14px;padding:12px;border:1px solid var(--border);border-radius:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <strong>${esc(p.name)}${p.billing_rate?` <small style="color:var(--muted)">${fmtMoney(p.billing_rate)}/hr default</small>`:''}${p.active?'':' <small>(inactive)</small>'}</strong>
+          <span class="row-actions">
+            <button class="btn tiny secondary" onclick="toggleProject('${p.id}', ${!p.active})">${p.active?'Deactivate':'Reactivate'}</button>
+            <button class="btn tiny secondary" onclick="deleteProject('${p.id}')">✕</button>
+          </span>
+        </div>
+        ${pTasks.length?`<table><thead><tr><th>Tasks</th><th></th></tr></thead><tbody>${taskRows}</tbody></table>`:'<div style="color:var(--muted);font-size:13px;margin:6px 0">No tasks yet — add one below (needed for time entry)</div>'}
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+          <input type="text" id="nt-${p.id}" placeholder="New task name" style="flex:1;min-width:120px">
+          <input type="number" id="ntr-${p.id}" placeholder="Rate/hr" style="width:100px">
+          <button class="btn small" onclick="addTask('${p.id}')">Add Task</button>
+        </div>
+      </div>`;
+    }).join('');
+
+    return `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <strong>${esc(c.name)}</strong>
+        <span class="row-actions">
+          <button class="btn small secondary" onclick="fillClientForm('${c.id}')">Edit</button>
+          <button class="btn small secondary" onclick="deleteClient('${c.id}')">✕</button>
+        </span>
+      </div>
+      <div style="color:var(--muted);font-size:13px;margin-bottom:10px">
+        ${c.email?'✉ '+esc(c.email):''} ${c.billing_rate?' · '+fmtMoney(c.billing_rate)+'/hr default':''}
+      </div>
+      ${projBlocks||'<div style="color:var(--muted);font-size:13px">No projects yet</div>'}
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <input type="text" id="np-${c.id}" placeholder="New project name" style="flex:1;min-width:120px">
+        <input type="number" id="npr-${c.id}" placeholder="Rate/hr" style="width:110px">
+        <button class="btn small" onclick="addProject('${c.id}')">Add Project</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="view-title">Clients, Projects &amp; Tasks</div>
+    <div class="card">
+      <div class="form-row">
+        <div><label>Name</label><input type="text" id="c-name"></div>
+        <div><label>Email</label><input type="email" id="c-email"></div>
+        <div><label>Default Rate ($/hr)</label><input type="number" id="c-rate" step="0.01"></div>
+      </div>
+      <div class="form-row"><div><label>Address (appears on invoices)</label><input type="text" id="c-address"></div></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" onclick="saveClient(null)">Add Client</button>
+        <button class="btn secondary hidden" id="c-cancel" onclick="clearClientForm()">Cancel Edit</button>
+      </div>
+    </div>
+    ${cards||'<div class="empty">No clients yet — add your first one above.</div>'}`;
+}
+let editingClientId = null;
+function fillClientForm(id) {
+  const c = clients.find(x => x.id === id); if (!c) return;
+  editingClientId = id;
+  document.getElementById('c-name').value = c.name||'';
+  document.getElementById('c-email').value = c.email||'';
+  document.getElementById('c-rate').value = c.billing_rate||'';
+  document.getElementById('c-address').value = c.address||'';
+  document.getElementById('c-cancel').classList.remove('hidden');
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+function clearClientForm() {
+  editingClientId = null;
+  ['c-name','c-email','c-rate','c-address'].forEach(i => document.getElementById(i).value='');
+  document.getElementById('c-cancel').classList.add('hidden');
+}
+async function saveClient() {
+  const name = document.getElementById('c-name').value.trim();
+  if (!name) { toast('Name required'); return; }
+  const payload = {
+    name,
+    email: document.getElementById('c-email').value.trim()||null,
+    billing_rate: parseFloat(document.getElementById('c-rate').value)||null,
+    address: document.getElementById('c-address').value.trim()||null,
+    updated_at: new Date().toISOString(),
+  };
+  const { error } = editingClientId
+    ? await db.from('clients').update(payload).eq('id', editingClientId)
+    : await db.from('clients').insert(payload);
+  if (error) { toast(error.message); return; }
+  clearClientForm(); clients = await fetchClients();
+  renderClients(); renderTime(); renderExpenses(); toast('Client saved');
+}
+async function deleteClient(id) {
+  if (!confirm('Delete this client AND all their projects, tasks, expenses and time entries?')) return;
+  const { error } = await db.from('clients').delete().eq('id', id);
+  if (error) { toast(error.message); return; }
+  await loadAll(); toast('Client deleted');
+}
+async function addProject(clientId) {
+  const name = document.getElementById('np-'+clientId).value.trim();
+  const rate = parseFloat(document.getElementById('npr-'+clientId).value);
+  if (!name) { toast('Project name required'); return; }
+  const { error } = await db.from('projects').insert({ client_id: clientId, name, billing_rate: rate||null });
+  if (error) { toast(error.message); return; }
+  projects = await fetchProjects(); renderClients(); renderTime(); renderExpenses(); toast('Project added');
+}
+async function toggleProject(id, active) {
+  const { error } = await db.from('projects').update({ active }).eq('id', id);
+  if (error) { toast(error.message); return; }
+  projects = await fetchProjects(); renderClients(); renderTime(); renderExpenses();
+}
+async function deleteProject(id) {
+  if (!confirm('Delete this project, its tasks, expenses and time entries?')) return;
+  const { error } = await db.from('projects').delete().eq('id', id);
+  if (error) { toast(error.message); return; }
+  await loadAll(); toast('Project deleted');
+}
+async function addTask(projectId) {
+  const name = document.getElementById('nt-'+projectId).value.trim();
+  const rate = parseFloat(document.getElementById('ntr-'+projectId).value);
+  if (!name) { toast('Task name required'); return; }
+  const { error } = await db.from('tasks').insert({ project_id: projectId, name, hourly_rate: rate||null });
+  if (error) { toast(error.message); return; }
+  tasks = await fetchTasks(); renderClients(); renderTime(); toast('Task added');
+}
+async function toggleTask(id, active) {
+  const { error } = await db.from('tasks').update({ active }).eq('id', id);
+  if (error) { toast(error.message); return; }
+  tasks = await fetchTasks(); renderClients(); renderTime();
+}
+async function deleteTask(id) {
+  if (!confirm('Delete this task and its time entries?')) return;
+  const { error } = await db.from('tasks').delete().eq('id', id);
+  if (error) { toast(error.message); return; }
+  await loadAll(); toast('Task deleted');
+}
+</script>
+</body>
+</html>
