@@ -1598,6 +1598,11 @@ async function deleteEstimate(id) {
 // ==================================================================
 // PRINTABLE ESTIMATE (browser Print → Save as PDF)
 // ==================================================================
+function estFmtMDY(d) {
+  if (!d) return '';
+  const parts = String(d).split('-');
+  return parts[1] + '/' + parts[2] + '/' + parts[0];
+}
 function printEstimate(id) {
   const e = estimates.find(x => x.id === id);
   if (!e) return;
@@ -1627,9 +1632,8 @@ function printEstimate(id) {
         <span style="white-space:pre-wrap">${esc((cli && cli.address) || '')}</span>
       </div>
       <div style="text-align:right">
-        Issue date: ${esc(e.issue_date || '')}<br>
-        ${e.valid_until ? 'Valid until: ' + esc(e.valid_until) + '<br>' : ''}
-        Status: ${esc(e.status || '')}
+         Issue date: ${estFmtMDY(e.issue_date)}<br>
+         ${e.valid_until ? 'Valid until: ' + estFmtMDY(e.valid_until) + '<br>' : ''}
       </div>
     </div>
     ${e.title ? `<h2>${esc(e.title)}</h2>` : ''}
