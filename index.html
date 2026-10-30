@@ -1136,6 +1136,487 @@ async function deleteTask(id) {
   if (error) { toast(error.message); return; }
   await loadAll(); toast('Task deleted');
 }
+// ---------- runtime CSS ----------
+(function () {
+  const st = document.createElement('style');
+  st.textContent = `
+    .est-status { display:inline-block; font-size:11px; font-weight:600; padding:2px 10px; border-radius:20px; text-transform:uppercase; letter-spacing:.3px; }
+    .est-status.draft { background:#f0edff; color:var(--p); }
+    .est-status.sent { background:#e8f3fd; color:#1a6fc4; }
+    .est-status.accepted { background:#e8f8ee; color:#1f8a4c; }
+    .est-status.declined { background:#fdeeee; color:var(--danger); }
+    .est-status.expired { background:#f2f2f5; color:var(--muted); }
+    table.est-lines { min-width:680px; }
+    table.est-lines input, table.est-lines select { padding:7px 8px; font-size:13px; }
+    .est-totals td { border-bottom:none; }
+    #es-newcli { border:1px dashed var(--p); border-radius:8px; padding:12px; margin-bottom:12px; background:#fafaff; }
+    #print-area { display:none; }
+    @media print {
+      #app, #login-screen, #receipt-modal, .toast { display:none !important; }
+      #print-area { display:block; padding:40px; color:#000; font-size:13px; }
+      #print-area h1 { font-size:22px; margin-bottom:2px; }
+      #print-area .doc-meta { display:flex; justify-content:space-between; gap:24px; margin:24px 0; }
+      #print-area table { width:100%; border-collapse:collapse; margin-top:16px; }
+      #print-area th { border-bottom:2px solid #000; padding:6px 4px; text-transform:none; font-size:12px; color:#000; }
+      #print-area td { padding:6px 4px; border-bottom:1px solid #ccc; }
+      #print-area .totals-row { text-align:right; font-weight:600; }
+    }
+  `;
+  document.head.appendChild(st);
+})();
+
+// ---------- constants & state ----------
+const EST_BUSINESS_NAME = '4th Generation';
+const EST_DEFAULT_TYPES = ['Labor', 'Materials', 'Subcontractor', 'Permits', 'Disposal', 'Overhead & Profit'];
+const EST_STATUSES = ['draft', 'sent', 'accepted', 'declined', 'expired'];
+
+let EST_TYPES = [...EST_DEFAULT_TYPES];
+let estimates = [];        // cached estimate headers
+let estimateItems = [];    // cached line items (all estimates)
+let estMode = 'list';      // 'list' | 'edit'
+let editingEstimateId = null;
+let estLines = [];         // editor working copy of line items
+
+// ---------- fetch / tab hook ----------
+async function fetchEstimates() {
+  const { data, error } = await db.from('estimates').select('*').order('estimate_number', { ascending: false }).limit(500);
+  if (error) { toast('estimates: ' + error.message); return []; }
+  return data || [];
+}
+async function fetchEstimateItems() {
+  const { data, error } = await db.from('estimate_items').select('*');
+  if (error) { toast('estimate_items: ' + error.message); return []; }
+  return data || [];
+}
+function estItemsFor(estId) { return estimateItems.filter(i => i.estimate_id === estId).sort((a,b) => (a.position||0)-(b.position||0)); }
+function rebuildEstTypes() {
+  EST_TYPES = [...EST_DEFAULT_TYPES];
+  estimateItems.forEach(it => { if (it.item_type && !EST_TYPES.includes(it.item_type)) EST_TYPES.push(it.item_type); });
+}
+async function estRefreshData() {
+  estimates = await fetchEstimates();
+  estimateItems = await fetchEstimateItems();
+  rebuildEstTypes();
+}
+async function estLoadAndRender() {
+  await estRefreshData();
+  renderEstimates();
+}
+// own listener on the Estimates tab — coexists with the existing nav handler
+document.querySelectorAll('nav button[data-view="estimates"]').forEach(btn => {
+  btn.addEventListener('click', estLoadAndRender);
+});
+
+// ---------- numbering: sequential, zero-padded ----------
+function padEstNumber(n) { return String(n).padStart(4, '0'); }
+function nextEstimateNumber() {
+  let max = 0;
+  estimates.forEach(e => { const m = /^\d+$/.test(String(e.estimate_number||'')) ? parseInt(e.estimate_number, 10) : 0; if (m > max) max = m; });
+  return padEstNumber(max + 1);
+}
+
+// ---------- math: computed, never stored ----------
+function estLineAmount(l, subtotal) {
+  if (l.is_percent) return (Number(l.unit_price || 0) / 100) * subtotal;
+  return Number(l.quantity || 0) * Number(l.unit_price || 0);
+}
+function estSubtotal(lines) {
+  return lines.filter(l => !l.is_percent).reduce((s, l) => s + Number(l.quantity || 0) * Number(l.unit_price || 0), 0);
+}
+function estPercentSum(lines) {
+  const sub = estSubtotal(lines);
+  return lines.filter(l => l.is_percent).reduce((s, l) => s + (Number(l.unit_price || 0) / 100) * sub, 0);
+}
+function estGrandTotal(lines) { return estSubtotal(lines) + estPercentSum(lines); }
+
+// ---------- dispatcher ----------
+function renderEstimates() {
+  if (estMode === 'edit') renderEstEditor(); else renderEstList();
+}
+
+// ==================================================================
+// LIST VIEW
+// ==================================================================
+function renderEstList() {
+  const el = document.getElementById('view-estimates');
+  const cards = estimates.map(e => {
+    const cli = clientById(e.client_id);
+    const items = estItemsFor(e.id);
+    const total = estGrandTotal(items);
+    return `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;flex-wrap:wrap;gap:6px">
+        <strong>#${esc(e.estimate_number)} <span style="color:var(--muted);font-weight:400">·</span> ${esc(cli ? cli.name : '—')}</strong>
+        <span class="row-actions">
+          <button class="btn tiny secondary" onclick="estOpenEdit('${e.id}')">Edit</button>
+          <button class="btn tiny secondary" onclick="printEstimate('${e.id}')">🖨 Print</button>
+          <button class="btn tiny secondary" onclick="deleteEstimate('${e.id}')">✕</button>
+        </span>
+      </div>
+      <div style="margin-bottom:6px">${esc(e.title || '')}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;font-size:13px;color:var(--muted)">
+        <span>Issued ${fmtDate(e.issue_date)}${e.valid_until ? ' · valid until ' + fmtDate(e.valid_until) : ''}</span>
+        <span><span class="est-status ${esc(e.status||'draft')}">${esc(e.status || 'draft')}</span>
+          <strong style="color:var(--text);margin-left:8px">${fmtMoney(total)}</strong> · ${items.length} line${items.length===1?'':'s'}</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="view-title">Estimates
+      <button class="btn" onclick="estOpenNew()">＋ New Estimate</button>
+    </div>
+    ${estimates.length ? cards : '<div class="empty">No estimates yet — create your first one.</div>'}`;
+}
+
+function estBlankLine() { return { item_type: 'Labor', description: '', quantity: 1, unit: 'hr', unit_price: '', is_percent: false }; }
+
+function estOpenNew() {
+  estMode = 'edit'; editingEstimateId = null; estLines = [estBlankLine()];
+  renderEstimates();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+function estOpenEdit(id) {
+  const e = estimates.find(x => x.id === id); if (!e) return;
+  estMode = 'edit'; editingEstimateId = id;
+  estLines = estItemsFor(id).map(i => ({
+    item_type: i.item_type || 'Labor', description: i.description || '',
+    quantity: i.quantity, unit: i.unit || '', unit_price: i.unit_price, is_percent: !!i.is_percent
+  }));
+  if (!estLines.length) estLines = [estBlankLine()];
+  renderEstimates();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+function estBackToList() {
+  estMode = 'list'; editingEstimateId = null; estLines = [];
+  estLoadAndRender();
+}
+
+// ==================================================================
+// EDITOR
+// ==================================================================
+function renderEstEditor() {
+  const el = document.getElementById('view-estimates');
+  const isNew = !editingEstimateId;
+  const cur = isNew ? null : estimates.find(x => x.id === editingEstimateId);
+  if (!isNew && !cur) { estBackToList(); return; }
+
+  el.innerHTML = `
+    <div class="view-title">${isNew ? 'New Estimate #' + nextEstimateNumber() : 'Edit Estimate #' + esc(cur.estimate_number)}
+      <span class="row-actions">
+        <button class="btn small secondary" onclick="estBackToList()">← Back to list</button>
+        ${!isNew ? `<button class="btn small secondary" onclick="printEstimate('${cur.id}')">🖨 Print</button>` : ''}
+      </span>
+    </div>
+
+    <div class="card">
+      <div class="form-row">
+        <div style="flex:2"><label>Client *</label>
+          <div style="display:flex;gap:8px">
+            <select id="es-client" style="flex:1" onchange="estClientChanged(this.value)">${estClientOptions(cur ? cur.client_id : '')}</select>
+            <button class="btn secondary small" type="button" onclick="estToggleNewClient()">＋ New</button>
+          </div>
+        </div>
+        <div style="flex:2"><label>Project (optional)</label>
+          <select id="es-project">${estProjectOptions(cur ? cur.client_id : '', cur ? cur.project_id : '')}</select>
+        </div>
+      </div>
+
+      <div id="es-newcli" class="hidden">
+        <div class="form-row">
+          <div><label>New client name *</label><input type="text" id="es-nc-name" placeholder="Client name"></div>
+          <div style="flex:2"><label>Address</label><input type="text" id="es-nc-addr" placeholder="Street, City, ST ZIP"></div>
+          <div style="align-self:flex-end"><button class="btn small" type="button" onclick="estSaveNewClient()">Create Client</button></div>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Email and default rate can be added later on the Clients tab.</div>
+      </div>
+
+      <div class="form-row">
+        <div style="flex:2"><label>Title</label><input type="text" id="es-title" value="${esc(cur ? cur.title || '' : '')}" placeholder="e.g. Kitchen remodel estimate"></div>
+        <div><label>Issue date *</label><input type="date" id="es-issue" value="${cur ? cur.issue_date : isoDate(new Date())}"></div>
+        <div><label>Valid until</label><input type="date" id="es-valid" value="${cur ? cur.valid_until || '' : ''}"></div>
+        <div><label>Status</label><select id="es-status">
+          ${EST_STATUSES.map(s => `<option value="${s}"${cur && cur.status === s ? ' selected':''}>${s}</option>`).join('')}
+        </select></div>
+      </div>
+
+      <div class="form-row"><div><label>Notes (shown on printout)</label>
+        <textarea id="es-notes" rows="2" placeholder="Optional — terms, exclusions, payment expectations…">${esc(cur ? cur.notes || '' : '')}</textarea>
+      </div></div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <strong>Line Items</strong>
+        <button class="btn small" onclick="estAddLine()">＋ Add Line</button>
+      </div>
+      <div class="grid-wrap"><div id="es-lines">${estLinesTable()}</div></div>
+      <table class="est-totals" style="width:auto;margin-left:auto">
+        <tr><td style="text-align:right;color:var(--muted)">Subtotal</td><td style="text-align:right;font-weight:600" id="es-subtotal"></td></tr>
+        <tr><td style="text-align:right;color:var(--muted)">Overhead &amp; Profit (%)</td><td style="text-align:right;font-weight:600" id="es-pctsum"></td></tr>
+        <tr><td style="text-align:right;color:var(--muted);font-size:16px"><strong>Total</strong></td><td style="text-align:right;font-size:16px;font-weight:700" id="es-total"></td></tr>
+      </table>
+      <div style="font-size:11px;color:var(--muted);margin-top:8px">Check the ％ box for overhead/profit lines — they calculate as a percent of the subtotal. Custom types you create are saved with the estimate and appear in the dropdown afterwards.</div>
+    </div>
+
+    <div style="display:flex;gap:8px">
+      <button class="btn" onclick="saveEstimate(this)">${isNew ? 'Save Estimate' : 'Save Changes'}</button>
+      <button class="btn secondary" onclick="estBackToList()">Cancel</button>
+    </div>`;
+  refreshEstAmounts();
+}
+
+// ---------- dropdowns ----------
+function estClientOptions(selectedId) {
+  let out = '<option value="">Select client…</option>';
+  clients.forEach(c => { out += `<option value="${c.id}"${c.id === selectedId ? ' selected':''}>${esc(c.name)}</option>`; });
+  return out;
+}
+function estProjectOptions(clientId, selectedId) {
+  let out = '<option value="">— none —</option>';
+  if (clientId) {
+    projects.filter(p => p.client_id === clientId).forEach(p => {
+      out += `<option value="${p.id}"${p.id === selectedId ? ' selected':''}>${esc(p.name)}</option>`;
+    });
+  }
+  return out;
+}
+function estClientChanged(clientId) {
+  const sel = document.getElementById('es-project');
+  if (sel) sel.innerHTML = estProjectOptions(clientId, null);
+}
+
+// ---------- new-client quick add ----------
+function estToggleNewClient() {
+  const d = document.getElementById('es-newcli');
+  if (d) d.classList.toggle('hidden');
+}
+async function estSaveNewClient() {
+  const name = document.getElementById('es-nc-name').value.trim();
+  if (!name) { toast('Client name required'); return; }
+  const payload = {
+    name,
+    email: null,
+    billing_rate: null,
+    address: document.getElementById('es-nc-addr').value.trim() || null,
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await db.from('clients').insert(payload).select('id').single();
+  if (error) { toast(error.message); return; }
+  clients = await fetchClients();
+  document.getElementById('es-client').innerHTML = estClientOptions(data.id);
+  estClientChanged(data.id);
+  document.getElementById('es-newcli').classList.add('hidden');
+  document.getElementById('es-nc-name').value = '';
+  document.getElementById('es-nc-addr').value = '';
+  toast('Client created — add their rate on the Clients tab anytime');
+}
+
+// ---------- line items (state in estLines; no full re-render while typing) ----------
+function estLinesTable() {
+  return `
+  <table class="est-lines">
+    <thead><tr>
+      <th style="min-width:130px">Type</th><th>Description</th>
+      <th style="width:70px">Qty</th><th style="width:80px">Unit</th>
+      <th style="width:90px">Rate / %</th>
+      <th style="text-align:right;width:110px">Amount</th>
+      <th style="width:70px;text-align:center">％<br><span style="font-weight:400;font-size:10px">(of sub)</span></th><th></th>
+    </tr></thead>
+    <tbody>
+    ${estLines.map((l, i) => {
+      const amt = estLineAmount(l, estSubtotal(estLines));
+      const types = EST_TYPES.includes(l.item_type) ? EST_TYPES : EST_TYPES.concat([l.item_type]);
+      const opts = types.map(t => `<option value="${esc(t)}"${t === l.item_type ? ' selected':''}>${esc(t)}</option>`).join('')
+        + '<option value="__new__">＋ New type…</option>';
+      return `<tr>
+        <td><select onchange="estTypeChange(${i}, this.value, this)">${opts}</select></td>
+        <td><input type="text" value="${esc(l.description)}" placeholder="Description" oninput="estLineInput(${i}, 'description', this.value)"></td>
+        <td><input type="number" step="0.25" min="0" inputmode="decimal" value="${l.quantity ?? ''}" ${l.is_percent ? 'disabled' : ''} oninput="estLineInput(${i}, 'quantity', this.value)"></td>
+        <td><input type="text" value="${esc(l.unit || '')}" placeholder="hr" ${l.is_percent ? 'disabled' : ''} oninput="estLineInput(${i}, 'unit', this.value)"></td>
+        <td><input type="number" step="0.01" inputmode="decimal" value="${l.unit_price ?? ''}" oninput="estLineInput(${i}, 'unit_price', this.value)"></td>
+        <td class="est-amt" data-i="${i}" style="text-align:right;font-weight:600;white-space:nowrap">${fmtMoney(amt)}</td>
+        <td style="text-align:center"><input type="checkbox" style="width:auto" ${l.is_percent ? 'checked' : ''} onchange="estTogglePct(${i}, this.checked)"></td>
+        <td style="text-align:right"><button class="btn tiny secondary" onclick="estDelLine(${i})">✕</button></td>
+      </tr>`;
+    }).join('')}
+    </tbody>
+  </table>`;
+}
+function estLineInput(i, field, value) {
+  estLines[i][field] = (field === 'quantity' || field === 'unit_price') ? (value === '' ? '' : parseFloat(value)) : value;
+  refreshEstAmounts();
+}
+function estTypeChange(i, val, sel) {
+  if (val === '__new__') {
+    const t = prompt('New line type / category name:');
+    if (t && t.trim()) {
+      const name = t.trim();
+      if (!EST_TYPES.includes(name)) EST_TYPES.push(name); // persists via the DB once this estimate is saved
+      estLines[i].item_type = name;
+      document.getElementById('es-lines').innerHTML = estLinesTable();
+      refreshEstAmounts();
+    } else {
+      sel.value = estLines[i].item_type; // undo
+    }
+    return;
+  }
+  estLines[i].item_type = val;
+}
+function estTogglePct(i, on) {
+  estLines[i].is_percent = on;
+  if (on && estLines[i].item_type === 'Labor') estLines[i].item_type = 'Overhead & Profit'; // convenience, not enforced
+  document.getElementById('es-lines').innerHTML = estLinesTable(); // needed to toggle disabled inputs
+  refreshEstAmounts();
+}
+function estAddLine() {
+  estLines.push(estBlankLine());
+  document.getElementById('es-lines').innerHTML = estLinesTable();
+  refreshEstAmounts();
+}
+function estDelLine(i) {
+  estLines.splice(i, 1);
+  document.getElementById('es-lines').innerHTML = estLinesTable();
+  refreshEstAmounts();
+}
+function refreshEstAmounts() {
+  const subtotal = estSubtotal(estLines), pct = estPercentSum(estLines);
+  const g = id => document.getElementById(id);
+  if (g('es-subtotal')) g('es-subtotal').textContent = fmtMoney(subtotal);
+  if (g('es-pctsum')) g('es-pctsum').textContent = fmtMoney(pct);
+  if (g('es-total')) g('es-total').textContent = fmtMoney(subtotal + pct);
+  document.querySelectorAll('#es-lines .est-amt').forEach(td => {
+    const i = Number(td.dataset.i);
+    if (estLines[i]) td.textContent = fmtMoney(estLineAmount(estLines[i], subtotal));
+  });
+}
+
+// ---------- save ----------
+async function saveEstimate(btn) {
+  const clientId = document.getElementById('es-client').value;
+  if (!clientId) { toast('Select a client'); return; }
+  const issue = document.getElementById('es-issue').value;
+  if (!issue) { toast('Issue date required'); return; }
+
+  const payload = {
+    client_id: clientId,
+    project_id: document.getElementById('es-project').value || null,
+    title: document.getElementById('es-title').value.trim(),
+    issue_date: issue,
+    valid_until: document.getElementById('es-valid').value || null,
+    status: document.getElementById('es-status').value,
+    notes: document.getElementById('es-notes').value.trim() || null,
+    updated_at: new Date().toISOString(),
+  };
+
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    let estId;
+    if (editingEstimateId) {
+      const { error } = await db.from('estimates').update(payload).eq('id', editingEstimateId);
+      if (error) { toast(error.message); return; }
+      estId = editingEstimateId;
+    } else {
+      // sequential numbering with retry — the DB UNIQUE constraint is the referee
+      let num = nextEstimateNumber(), saved = false;
+      for (let attempt = 0; attempt < 3 && !saved; attempt++) {
+        const { data, error } = await db.from('estimates').insert({ ...payload, estimate_number: num }).select('id').single();
+        if (!error) { estId = data.id; saved = true; }
+        else if (/unique|duplicate/i.test(error.message)) num = padEstNumber(parseInt(num, 10) + 1);
+        else { toast(error.message); return; }
+      }
+      if (!saved) { toast('Could not assign an estimate number — try again'); return; }
+    }
+
+    // rewrite all lines (simple & robust — tables are small)
+    const { error: delErr } = await db.from('estimate_items').delete().eq('estimate_id', estId);
+    if (delErr) { toast(delErr.message); return; }
+    const rows = estLines.map((l, pos) => ({
+      estimate_id: estId,
+      position: pos,
+      item_type: l.item_type,
+      description: l.description || '',
+      quantity: l.is_percent ? 1 : (Number(l.quantity) || 0),
+      unit: l.is_percent ? null : (l.unit || null),
+      unit_price: Number(l.unit_price) || 0,
+      is_percent: !!l.is_percent,
+    }));
+    if (rows.length) {
+      const { error: insErr } = await db.from('estimate_items').insert(rows);
+      if (insErr) { toast(insErr.message); return; }
+    }
+
+    estMode = 'list'; editingEstimateId = null; estLines = [];
+    await estLoadAndRender();
+    toast('Estimate saved');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Save Estimate';
+  }
+}
+
+async function deleteEstimate(id) {
+  const e = estimates.find(x => x.id === id);
+  if (!confirm(`Delete estimate #${e ? e.estimate_number : ''} and its line items?`)) return;
+  const { error: d1 } = await db.from('estimate_items').delete().eq('estimate_id', id);
+  if (d1) { toast(d1.message); return; }
+  const { error: d2 } = await db.from('estimates').delete().eq('id', id);
+  if (d2) { toast(d2.message); return; }
+  if (editingEstimateId === id) { estMode = 'list'; editingEstimateId = null; estLines = []; }
+  await estLoadAndRender();
+  toast('Estimate deleted');
+}
+
+// ==================================================================
+// PRINTABLE ESTIMATE (browser Print → Save as PDF)
+// ==================================================================
+function printEstimate(id) {
+  const e = estimates.find(x => x.id === id);
+  if (!e) return;
+  const cli = clientById(e.client_id);
+  const items = estItemsFor(id);
+  const subtotal = estSubtotal(items), pct = estPercentSum(items);
+
+  const rows = items.map(l => `<tr>
+    <td>${esc(l.item_type || '')}</td>
+    <td>${esc(l.description || '')}</td>
+    <td style="text-align:right">${l.is_percent ? '—' : esc(l.quantity ?? '')}</td>
+    <td>${esc(l.unit || '')}</td>
+    <td style="text-align:right">${l.is_percent ? esc(l.unit_price) + '%' : fmtMoney(l.unit_price)}</td>
+    <td style="text-align:right">${fmtMoney(estLineAmount(l, subtotal))}</td>
+  </tr>`).join('');
+
+  const old = document.getElementById('print-area'); if (old) old.remove();
+  const area = document.createElement('div');
+  area.id = 'print-area';
+  area.innerHTML = `
+    <h1>${esc(EST_BUSINESS_NAME)}</h1>
+    <div>Estimate #${esc(e.estimate_number)}</div>
+    <div class="doc-meta">
+      <div>
+        <strong>Prepared for:</strong><br>
+        ${esc(cli ? cli.name : '')}<br>
+        ${esc((cli && cli.address) || '')}
+      </div>
+      <div style="text-align:right">
+        Issue date: ${esc(e.issue_date || '')}<br>
+        ${e.valid_until ? 'Valid until: ' + esc(e.valid_until) + '<br>' : ''}
+        Status: ${esc(e.status || '')}
+      </div>
+    </div>
+    ${e.title ? `<h2>${esc(e.title)}</h2>` : ''}
+    <table>
+      <thead><tr><th>Type</th><th>Description</th><th style="text-align:right">Qty</th><th>Unit</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="totals-row">Subtotal: ${fmtMoney(subtotal)}<br>
+      Overhead &amp; Profit: ${fmtMoney(pct)}<br>
+      Total: <strong>${fmtMoney(subtotal + pct)}</strong></p>
+    ${e.notes ? `<p style="white-space:pre-wrap">${esc(e.notes)}</p>` : ''}`;
+  document.body.appendChild(area);
+  window.print();
+}
+window.addEventListener('afterprint', () => {
+  const a = document.getElementById('print-area'); if (a) a.remove();
+});
 </script>
 </body>
 </html>
