@@ -1136,6 +1136,27 @@ async function deleteTask(id) {
   if (error) { toast(error.message); return; }
   await loadAll(); toast('Task deleted');
 }
+// ==================================================================
+// ESTIMATES MODULE — self-integrating, single paste  (v2)
+//
+// HOW TO INSTALL (one step):
+//   Open index.html, scroll to the VERY BOTTOM, and paste this entire
+//   block just ABOVE the final "</script>" tag. Save. Upload.
+//
+// v2 CHANGES
+//   • Description is a multi-line textarea (Enter = new line), auto-grows,
+//     newlines preserved on the printout
+//   • Wider line-item table (900px min) with a 260px description column
+//   • Client address is now a 2-line textarea, printed with line breaks
+//   • More spacing around Subtotal / O&P / Total
+//   • Number spinners removed from qty + rate fields
+//
+// Still zero edits outside this block:
+//   • CSS injected at runtime
+//   • Estimates tab hooked by its own listener
+//   • Clients view's address field upgraded by wrapping renderClients()
+// ==================================================================
+
 // ---------- runtime CSS ----------
 (function () {
   const st = document.createElement('style');
@@ -1146,10 +1167,28 @@ async function deleteTask(id) {
     .est-status.accepted { background:#e8f8ee; color:#1f8a4c; }
     .est-status.declined { background:#fdeeee; color:var(--danger); }
     .est-status.expired { background:#f2f2f5; color:var(--muted); }
-    table.est-lines { min-width:680px; }
-    table.est-lines input, table.est-lines select { padding:7px 8px; font-size:13px; }
-    .est-totals td { border-bottom:none; }
+
+    table.est-lines { min-width:900px; }
+    table.est-lines input, table.est-lines select, table.est-lines textarea { padding:7px 8px; font-size:13px; }
+    table.est-lines td.est-desc { min-width:260px; }
+    table.est-lines textarea {
+      padding:7px 8px; font-size:13px; line-height:1.35; min-height:38px;
+      resize:none; overflow:hidden; font-family:inherit;
+    }
+
+    /* hide number spinners in the line-item grid (mobile keypad unaffected) */
+    table.est-lines input[type=number]::-webkit-outer-spin-button,
+    table.est-lines input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; appearance:none; margin:0; }
+    table.est-lines input[type=number] { -moz-appearance:textfield; appearance:textfield; }
+
+    /* totals block — roomier, with a rule above the grand total */
+    .est-totals { margin-top:16px; }
+    .est-totals td { border-bottom:none; padding:8px 0 8px 32px; }
+    .est-totals tr:last-child td { border-top:1px solid var(--border); padding-top:14px; }
+
     #es-newcli { border:1px dashed var(--p); border-radius:8px; padding:12px; margin-bottom:12px; background:#fafaff; }
+    #es-newcli textarea { resize:vertical; }
+
     #print-area { display:none; }
     @media print {
       #app, #login-screen, #receipt-modal, .toast { display:none !important; }
@@ -1158,7 +1197,7 @@ async function deleteTask(id) {
       #print-area .doc-meta { display:flex; justify-content:space-between; gap:24px; margin:24px 0; }
       #print-area table { width:100%; border-collapse:collapse; margin-top:16px; }
       #print-area th { border-bottom:2px solid #000; padding:6px 4px; text-transform:none; font-size:12px; color:#000; }
-      #print-area td { padding:6px 4px; border-bottom:1px solid #ccc; }
+      #print-area td { padding:6px 4px; border-bottom:1px solid #ccc; vertical-align:top; }
       #print-area .totals-row { text-align:right; font-weight:600; }
     }
   `;
@@ -1324,7 +1363,7 @@ function renderEstEditor() {
       <div id="es-newcli" class="hidden">
         <div class="form-row">
           <div><label>New client name *</label><input type="text" id="es-nc-name" placeholder="Client name"></div>
-          <div style="flex:2"><label>Address</label><input type="text" id="es-nc-addr" placeholder="Street, City, ST ZIP"></div>
+          <div style="flex:2"><label>Address (2 lines fine)</label><textarea id="es-nc-addr" rows="2" placeholder="Street&#10;City, ST ZIP"></textarea></div>
           <div style="align-self:flex-end"><button class="btn small" type="button" onclick="estSaveNewClient()">Create Client</button></div>
         </div>
         <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Email and default rate can be added later on the Clients tab.</div>
@@ -1349,20 +1388,20 @@ function renderEstEditor() {
         <strong>Line Items</strong>
         <button class="btn small" onclick="estAddLine()">＋ Add Line</button>
       </div>
-      <div class="grid-wrap"><div id="es-lines">${estLinesTable()}</div></div>
+      <div class="grid-wrap"><div id="es-lines"></div></div>
       <table class="est-totals" style="width:auto;margin-left:auto">
-        <tr><td style="text-align:right;color:var(--muted)">Subtotal</td><td style="text-align:right;font-weight:600" id="es-subtotal"></td></tr>
+        <tr><td style="text-align:right;color:var(--muted)">Subtotal</td><td style="text-align:right;font-weight:600;min-width:110px" id="es-subtotal"></td></tr>
         <tr><td style="text-align:right;color:var(--muted)">Overhead &amp; Profit (%)</td><td style="text-align:right;font-weight:600" id="es-pctsum"></td></tr>
         <tr><td style="text-align:right;color:var(--muted);font-size:16px"><strong>Total</strong></td><td style="text-align:right;font-size:16px;font-weight:700" id="es-total"></td></tr>
       </table>
-      <div style="font-size:11px;color:var(--muted);margin-top:8px">Check the ％ box for overhead/profit lines — they calculate as a percent of the subtotal. Custom types you create are saved with the estimate and appear in the dropdown afterwards.</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:10px">Press Enter in a description to start a new line (handy for listing separate tasks). Check the ％ box for overhead/profit lines — they calculate as a percent of the subtotal. Custom types you create are saved with the estimate and appear in the dropdown afterwards.</div>
     </div>
 
     <div style="display:flex;gap:8px">
       <button class="btn" onclick="saveEstimate(this)">${isNew ? 'Save Estimate' : 'Save Changes'}</button>
       <button class="btn secondary" onclick="estBackToList()">Cancel</button>
     </div>`;
-  refreshEstAmounts();
+  estRenderLines();
 }
 
 // ---------- dropdowns ----------
@@ -1411,16 +1450,29 @@ async function estSaveNewClient() {
   toast('Client created — add their rate on the Clients tab anytime');
 }
 
-// ---------- line items (state in estLines; no full re-render while typing) ----------
+// ---------- line items ----------
+// state lives in estLines; inputs write back without re-rendering the table
+function estAutoGrow(el) {
+  if (!el || el.tagName !== 'TEXTAREA') return;
+  el.style.height = 'auto';
+  el.style.height = Math.max(38, el.scrollHeight) + 'px';
+}
+function estRenderLines() {
+  const host = document.getElementById('es-lines');
+  if (!host) return;
+  host.innerHTML = estLinesTable();
+  host.querySelectorAll('textarea').forEach(estAutoGrow);
+  refreshEstAmounts();
+}
 function estLinesTable() {
   return `
   <table class="est-lines">
     <thead><tr>
       <th style="min-width:130px">Type</th><th>Description</th>
       <th style="width:70px">Qty</th><th style="width:80px">Unit</th>
-      <th style="width:90px">Rate / %</th>
-      <th style="text-align:right;width:110px">Amount</th>
-      <th style="width:70px;text-align:center">％<br><span style="font-weight:400;font-size:10px">(of sub)</span></th><th></th>
+      <th style="width:95px">Rate / %</th>
+      <th style="text-align:right;width:115px">Amount</th>
+      <th style="width:74px;text-align:center">％<br><span style="font-weight:400;font-size:10px">(of sub)</span></th><th></th>
     </tr></thead>
     <tbody>
     ${estLines.map((l, i) => {
@@ -1430,7 +1482,9 @@ function estLinesTable() {
         + '<option value="__new__">＋ New type…</option>';
       return `<tr>
         <td><select onchange="estTypeChange(${i}, this.value, this)">${opts}</select></td>
-        <td><input type="text" value="${esc(l.description)}" placeholder="Description" oninput="estLineInput(${i}, 'description', this.value)"></td>
+        <td class="est-desc"><textarea rows="1" placeholder="Description — Enter for a new line"
+          oninput="estLineInput(${i}, 'description', this.value, this)">
+${esc(l.description)}</textarea></td>
         <td><input type="number" step="0.25" min="0" inputmode="decimal" value="${l.quantity ?? ''}" ${l.is_percent ? 'disabled' : ''} oninput="estLineInput(${i}, 'quantity', this.value)"></td>
         <td><input type="text" value="${esc(l.unit || '')}" placeholder="hr" ${l.is_percent ? 'disabled' : ''} oninput="estLineInput(${i}, 'unit', this.value)"></td>
         <td><input type="number" step="0.01" inputmode="decimal" value="${l.unit_price ?? ''}" oninput="estLineInput(${i}, 'unit_price', this.value)"></td>
@@ -1442,8 +1496,9 @@ function estLinesTable() {
     </tbody>
   </table>`;
 }
-function estLineInput(i, field, value) {
+function estLineInput(i, field, value, el) {
   estLines[i][field] = (field === 'quantity' || field === 'unit_price') ? (value === '' ? '' : parseFloat(value)) : value;
+  if (el) estAutoGrow(el);
   refreshEstAmounts();
 }
 function estTypeChange(i, val, sel) {
@@ -1453,8 +1508,7 @@ function estTypeChange(i, val, sel) {
       const name = t.trim();
       if (!EST_TYPES.includes(name)) EST_TYPES.push(name); // persists via the DB once this estimate is saved
       estLines[i].item_type = name;
-      document.getElementById('es-lines').innerHTML = estLinesTable();
-      refreshEstAmounts();
+      estRenderLines();
     } else {
       sel.value = estLines[i].item_type; // undo
     }
@@ -1465,18 +1519,15 @@ function estTypeChange(i, val, sel) {
 function estTogglePct(i, on) {
   estLines[i].is_percent = on;
   if (on && estLines[i].item_type === 'Labor') estLines[i].item_type = 'Overhead & Profit'; // convenience, not enforced
-  document.getElementById('es-lines').innerHTML = estLinesTable(); // needed to toggle disabled inputs
-  refreshEstAmounts();
+  estRenderLines(); // needed to toggle the disabled qty/unit inputs
 }
 function estAddLine() {
   estLines.push(estBlankLine());
-  document.getElementById('es-lines').innerHTML = estLinesTable();
-  refreshEstAmounts();
+  estRenderLines();
 }
 function estDelLine(i) {
   estLines.splice(i, 1);
-  document.getElementById('es-lines').innerHTML = estLinesTable();
-  refreshEstAmounts();
+  estRenderLines();
 }
 function refreshEstAmounts() {
   const subtotal = estSubtotal(estLines), pct = estPercentSum(estLines);
@@ -1577,7 +1628,7 @@ function printEstimate(id) {
 
   const rows = items.map(l => `<tr>
     <td>${esc(l.item_type || '')}</td>
-    <td>${esc(l.description || '')}</td>
+    <td style="white-space:pre-wrap">${esc(l.description || '')}</td>
     <td style="text-align:right">${l.is_percent ? '—' : esc(l.quantity ?? '')}</td>
     <td>${esc(l.unit || '')}</td>
     <td style="text-align:right">${l.is_percent ? esc(l.unit_price) + '%' : fmtMoney(l.unit_price)}</td>
@@ -1594,7 +1645,7 @@ function printEstimate(id) {
       <div>
         <strong>Prepared for:</strong><br>
         ${esc(cli ? cli.name : '')}<br>
-        ${esc((cli && cli.address) || '')}
+        <span style="white-space:pre-wrap">${esc((cli && cli.address) || '')}</span>
       </div>
       <div style="text-align:right">
         Issue date: ${esc(e.issue_date || '')}<br>
@@ -1617,6 +1668,43 @@ function printEstimate(id) {
 window.addEventListener('afterprint', () => {
   const a = document.getElementById('print-area'); if (a) a.remove();
 });
-</script>
+
+// ==================================================================
+// CLIENT ADDRESS FIELD — upgrade the Clients view input to a 2-line
+// textarea by wrapping renderClients(). No edits outside this block.
+// ==================================================================
+function estUpgradeAddressField() {
+  const inp = document.getElementById('c-address');
+  if (!inp || inp.tagName === 'TEXTAREA') return;
+  const ta = document.createElement('textarea');
+  ta.id = 'c-address';
+  ta.rows = 2;
+  ta.placeholder = inp.getAttribute('placeholder') || 'Street, City, ST ZIP';
+  ta.value = inp.value || '';
+  ta.style.resize = 'vertical';
+  inp.replaceWith(ta);
+}
+(function estWrapRenderClients() {
+  const orig = window.renderClients;
+  if (typeof orig !== 'function') return;
+  window.renderClients = function () {
+    orig.apply(this, arguments);
+    estUpgradeAddressField();
+  };
+})();
+
+/* ============================================================================
+IF SAVING FAILS WITH A PERMISSION / RLS ERROR — run this once in the Supabase
+SQL editor (the pre-existing estimate tables' policies were never audited):
+
+alter table estimates enable row level security;
+alter table estimate_items enable row level security;
+drop policy if exists "authenticated_all_estimates" on estimates;
+create policy "authenticated_all_estimates" on estimates
+  for all to authenticated using (true) with check (true);
+drop policy if exists "authenticated_all_estimate_items" on estimate_items;
+create policy "authenticated_all_estimate_items" on estimate_items
+  for all to authenticated using (true) with check (true);
+============================================================================ */</script>
 </body>
 </html>
