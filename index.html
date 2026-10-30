@@ -1136,27 +1136,6 @@ async function deleteTask(id) {
   if (error) { toast(error.message); return; }
   await loadAll(); toast('Task deleted');
 }
-// ==================================================================
-// ESTIMATES MODULE — self-integrating, single paste  (v2)
-//
-// HOW TO INSTALL (one step):
-//   Open index.html, scroll to the VERY BOTTOM, and paste this entire
-//   block just ABOVE the final "</script>" tag. Save. Upload.
-//
-// v2 CHANGES
-//   • Description is a multi-line textarea (Enter = new line), auto-grows,
-//     newlines preserved on the printout
-//   • Wider line-item table (900px min) with a 260px description column
-//   • Client address is now a 2-line textarea, printed with line breaks
-//   • More spacing around Subtotal / O&P / Total
-//   • Number spinners removed from qty + rate fields
-//
-// Still zero edits outside this block:
-//   • CSS injected at runtime
-//   • Estimates tab hooked by its own listener
-//   • Clients view's address field upgraded by wrapping renderClients()
-// ==================================================================
-
 // ---------- runtime CSS ----------
 (function () {
   const st = document.createElement('style');
@@ -1692,19 +1671,6 @@ function estUpgradeAddressField() {
     estUpgradeAddressField();
   };
 })();
-
-/* ============================================================================
-IF SAVING FAILS WITH A PERMISSION / RLS ERROR — run this once in the Supabase
-SQL editor (the pre-existing estimate tables' policies were never audited):
-
-alter table estimates enable row level security;
-alter table estimate_items enable row level security;
-drop policy if exists "authenticated_all_estimates" on estimates;
-create policy "authenticated_all_estimates" on estimates
-  for all to authenticated using (true) with check (true);
-drop policy if exists "authenticated_all_estimate_items" on estimate_items;
-create policy "authenticated_all_estimate_items" on estimate_items
-  for all to authenticated using (true) with check (true);
-============================================================================ */</script>
+</script>
 </body>
 </html>
