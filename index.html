@@ -85,6 +85,7 @@
   .staged-doc { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; width:64px; height:64px; border:2px solid var(--p); border-radius:8px; font-size:10px; background:#f0edff; color:var(--p); text-align:center; padding:2px; overflow:hidden; }
   .staged-remove { position:absolute; top:-7px; right:-7px; width:20px; height:20px; border-radius:50%; background:var(--danger); color:#fff; border:none; font-size:11px; line-height:1; cursor:pointer; font-weight:700; }
   .badge { display:inline-block; background:var(--p); color:#fff; border-radius:10px; font-size:10px; padding:1px 6px; margin-left:6px; vertical-align:top; }
+  .draft-restored { font-size:12px; color:var(--p); background:#f0edff; border-radius:6px; padding:6px 10px; margin-bottom:10px; }
 
   @media (max-width:600px){
     .hide-sm { display:none; }
@@ -133,7 +134,8 @@
 // CONFIG — paste YOUR values from Supabase Dashboard → Settings → API
 // ==================================================================
 const SUPABASE_URL = 'https://oexgfphcwztifchjsehr.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_25kmLQ0NXu1Ks3XkhSXKsA_ITOd8beJ';
+const SUPABASE_ANON_KEY = 'sb_publishable_25kmLQ0NXu1Ks3XkhSXKsA_ITOd8beJ
+';
 
 const db = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -144,6 +146,7 @@ let expTab = 'week';
 let expFilterProject = '';
 
 const EXP_CATEGORIES = ['Materials', 'Subcontractor', 'Deposit', 'Other'];
+const DRAFT_KEY = 'expenseDraft';
 
 function toast(msg) {
   const t = document.getElementById('toast');
@@ -569,9 +572,68 @@ function expenseProjectOptions(selectedId) {
   return out;
 }
 
-// ---- new/edit expense form ----
+// ---- new/edit expense form (with draft preservation) ----
 let editingExpenseId = null;
 let stagedFiles = [];   // [{file, name, previewUrl}]
+let draftNoticeShown = false;
+
+function saveDraft() {
+  const g = id => document.getElementById(id);
+  if (!g('e-date')) return;
+  const draft = {
+    date: g('e-date').value,
+    project: g('e-project').value,
+    vendor: g('e-vendor').value,
+    amount: g('e-amount').value,
+    category: g('e-category').value,
+    notes: g('e-notes').value,
+    editingId: editingExpenseId,
+    savedAt: Date.now()
+  };
+  try { localStorage.setItem(DRAFT_KEY, JSON.stringify(draft)); } catch(err) {}
+}
+function clearDraft() {
+  try { localStorage.removeItem(DRAFT_KEY); } catch(err) {}
+  draftNoticeShown = false;
+}
+function readDraft() {
+  try { return JSON.parse(localStorage.getItem(DRAFT_KEY)); } catch(err) { return null; }
+}
+function restoreDraft() {
+  const d = readDraft();
+  if (!d || !d.savedAt) return;
+  // discard drafts older than 7 days
+  if (Date.now() - d.savedAt > 7*24*3600*1000) { clearDraft(); return; }
+  const g = id => document.getElementById(id);
+  if (!g('e-date')) return;
+  // if it was an edit for an expense that no longer exists, discard
+  if (d.editingId && !expenses.find(x => x.id === d.editingId)) { clearDraft(); return; }
+
+  const empty = !d.vendor && !d.amount && !d.project && !d.notes && !d.editingId;
+  if (empty) return;
+
+  if (d.editingId) {
+    editingExpenseId = d.editingId;
+    document.getElementById('exp-form-title').textContent = 'Edit Expense';
+    document.getElementById('e-cancel').classList.remove('hidden');
+  }
+  if (d.date) g('e-date').value = d.date;
+  if (d.project) g('e-project').value = d.project;
+  if (d.vendor) g('e-vendor').value = d.vendor;
+  if (d.amount !== '' && d.amount != null) g('e-amount').value = d.amount;
+  if (d.category && EXP_CATEGORIES.includes(d.category)) g('e-category').value = d.category;
+  if (d.notes) g('e-notes').value = d.notes;
+
+  if (!draftNoticeShown) {
+    draftNoticeShown = true;
+    const form = document.getElementById('exp-form');
+    const notice = document.createElement('div');
+    notice.className = 'draft-restored';
+    notice.textContent = '↩︎ Restored your unsaved expense draft. If the camera reloaded the page, retake the receipt photo, then tap Save Expense.';
+    form.insertBefore(notice, form.children[1]);
+  }
+}
+
 function renderExpenseForm() {
   return `
   <div class="card" id="exp-form">
@@ -597,7 +659,7 @@ function renderExpenseForm() {
           <button class="btn secondary small" type="button" onclick="document.getElementById('e-file').click()" id="e-file-btn">📷 Camera / 📁 Upload<span class="badge" id="e-count" style="display:none"></span></button>
         </div>
         <div class="staged-strip" id="e-staged"></div>
-        <div style="font-size:11px;color:var(--muted);margin-top:6px">Photos attach to this expense — fill in the fields above, then tap Save Expense.</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px">Typed fields are auto-saved as a draft — even if the camera reloads the page, your entries come back. Tap Save Expense to finish.</div>
       </div>
     </div>
     <div style="display:flex;gap:8px">
@@ -641,6 +703,7 @@ function cancelExpenseEdit() {
   document.getElementById('exp-form-title').textContent = 'Add Expense';
   document.getElementById('e-cancel').classList.add('hidden');
   resetExpenseForm();
+  clearDraft();
 }
 function resetExpenseForm() {
   ['e-vendor','e-amount','e-notes'].forEach(i => { const el = document.getElementById(i); if (el) el.value=''; });
@@ -651,8 +714,14 @@ function resetExpenseForm() {
 }
 
 function wireExpenseForm() {
+  const form = document.getElementById('exp-form');
   const input = document.getElementById('e-file');
-  if (!input) return;
+  if (!form || !input) return;
+
+  // draft-save on every keystroke / selection
+  form.addEventListener('input', saveDraft);
+  form.addEventListener('change', saveDraft);
+
   input.addEventListener('change', () => {
     let added = 0, skipped = 0;
     for (const f of input.files) {
@@ -666,11 +735,17 @@ function wireExpenseForm() {
     input.value = '';
     refreshStagedFiles();
     if (added && skipped) toast(`${added} receipt${added>1?'s':''} attached (${skipped} duplicate${skipped>1?'s':''} skipped)`);
-    else if (added) toast('Receipt attached — fill in the fields and save');
+    else if (added) toast('Receipt attached — tap Save Expense when ready');
     else if (skipped) toast('Duplicate photo skipped');
   });
   refreshStagedFiles();
+  restoreDraft();
 }
+
+// safety net: persist the draft the instant the page is hidden
+// (Android does this when handing control to the camera app)
+document.addEventListener('visibilitychange', () => { if (document.hidden) saveDraft(); });
+window.addEventListener('pagehide', saveDraft);
 
 async function saveExpense() {
   const date = document.getElementById('e-date').value;
@@ -733,6 +808,7 @@ function editExpense(id) {
   document.getElementById('e-amount').value = e.amount;
   document.getElementById('e-category').value = EXP_CATEGORIES.includes(e.category) ? e.category : 'Other';
   document.getElementById('e-notes').value = e.notes || '';
+  saveDraft();
   refreshStagedFiles();
   window.scrollTo({top:0,behavior:'smooth'});
 }
