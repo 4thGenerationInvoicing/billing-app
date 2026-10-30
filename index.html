@@ -79,9 +79,12 @@
   #receipt-modal .modal-close { position:absolute; top:16px; right:20px; color:#fff; font-size:28px; cursor:pointer; background:none; border:none; }
   .file-pick { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
   .file-pick input[type=file] { display:none; }
-  .file-pill { display:inline-flex; align-items:center; gap:6px; background:#f0edff; color:var(--p); border-radius:8px; padding:6px 10px; font-size:12px; max-width:280px; }
-  .file-pill span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .file-pill button { border:none; background:none; color:var(--danger); cursor:pointer; font-weight:700; font-size:14px; padding:0 2px; }
+  .staged-strip { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  .staged-photo { position:relative; width:64px; height:64px; }
+  .staged-photo img { width:64px; height:64px; object-fit:cover; border-radius:8px; border:2px solid var(--p); display:block; }
+  .staged-doc { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; width:64px; height:64px; border:2px solid var(--p); border-radius:8px; font-size:10px; background:#f0edff; color:var(--p); text-align:center; padding:2px; overflow:hidden; }
+  .staged-remove { position:absolute; top:-7px; right:-7px; width:20px; height:20px; border-radius:50%; background:var(--danger); color:#fff; border:none; font-size:11px; line-height:1; cursor:pointer; font-weight:700; }
+  .badge { display:inline-block; background:var(--p); color:#fff; border-radius:10px; font-size:10px; padding:1px 6px; margin-left:6px; vertical-align:top; }
 
   @media (max-width:600px){
     .hide-sm { display:none; }
@@ -145,7 +148,7 @@ const EXP_CATEGORIES = ['Materials', 'Subcontractor', 'Deposit', 'Other'];
 function toast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg; t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 2200);
+  setTimeout(() => t.classList.remove('show'), 2400);
 }
 function mondayOf(d) {
   const x = new Date(d); x.setHours(0,0,0,0);
@@ -159,6 +162,7 @@ function fmtMoney(n) { return '$' + Number(n || 0).toFixed(2); }
 function fmtHours(min) { const h = min / 60; return Number.isInteger(h) ? h + ':00' : h.toFixed(2); }
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function catClass(c) { return String(c||'other').toLowerCase().replace(/[^a-z]/g,''); }
+function isImageFile(name) { return /\.(jpe?g|png|gif|webp|heic)$/i.test(name); }
 
 async function handleLogin() {
   const email = document.getElementById('login-email').value.trim();
@@ -567,14 +571,14 @@ function expenseProjectOptions(selectedId) {
 
 // ---- new/edit expense form ----
 let editingExpenseId = null;
-let stagedFiles = [];   // [{file, name}]
+let stagedFiles = [];   // [{file, name, previewUrl}]
 function renderExpenseForm() {
   return `
   <div class="card" id="exp-form">
     <div style="font-weight:600;margin-bottom:8px" id="exp-form-title">Add Expense</div>
     <div class="form-row">
       <div><label>Date</label><input type="date" id="e-date" value="${isoDate(new Date())}"></div>
-      <div><label>Project</label><select id="e-project">${expenseProjectOptions('')}</select></div>
+      <div style="flex:2"><label>Project</label><select id="e-project">${expenseProjectOptions('')}</select></div>
     </div>
     <div class="form-row">
       <div><label>Vendor</label><input type="text" id="e-vendor" placeholder="Where purchased"></div>
@@ -590,9 +594,10 @@ function renderExpenseForm() {
       <div style="flex:3"><label>Receipt</label>
         <div class="file-pick">
           <input type="file" id="e-file" accept="image/*,.pdf" capture="environment" multiple>
-          <button class="btn secondary small" type="button" onclick="document.getElementById('e-file').click()" id="e-file-btn">📷 Camera / 📁 Upload</button>
-          <div id="e-staged" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          <button class="btn secondary small" type="button" onclick="document.getElementById('e-file').click()" id="e-file-btn">📷 Camera / 📁 Upload<span class="badge" id="e-count" style="display:none"></span></button>
         </div>
+        <div class="staged-strip" id="e-staged"></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px">Photos attach to this expense — fill in the fields above, then tap Save Expense.</div>
       </div>
     </div>
     <div style="display:flex;gap:8px">
@@ -601,15 +606,37 @@ function renderExpenseForm() {
     </div>
   </div>`;
 }
+
 function refreshStagedFiles() {
-  const holder = document.getElementById('e-staged');
-  if (!holder) return;
-  holder.innerHTML = stagedFiles.map((f,i) => `
-    <span class="file-pill"><span>${esc(f.name)}</span><button onclick="removeStaged(${i})">✕</button></span>`).join('');
+  const strip = document.getElementById('e-staged');
+  const count = document.getElementById('e-count');
+  if (!strip) return;
+  strip.innerHTML = stagedFiles.map((sf, i) => {
+    if (sf.previewUrl && isImageFile(sf.name)) {
+      return `<div class="staged-photo"><img src="${sf.previewUrl}" alt="staged"><button class="staged-remove" onclick="removeStaged(${i})">✕</button></div>`;
+    }
+    return `<div class="staged-doc"><span>${esc(sf.name.length > 18 ? sf.name.slice(0,16)+'…' : sf.name)}</span><button class="staged-remove" onclick="removeStaged(${i})">✕</button></div>`;
+  }).join('');
+  if (count) {
+    if (stagedFiles.length) { count.style.display='inline-block'; count.textContent = stagedFiles.length; }
+    else { count.style.display='none'; }
+  }
 }
-function removeStaged(i) { stagedFiles.splice(i,1); refreshStagedFiles(); }
+function removeStaged(i) {
+  const sf = stagedFiles.splice(i,1)[0];
+  if (sf && sf.previewUrl) URL.revokeObjectURL(sf.previewUrl);
+  refreshStagedFiles();
+}
+function isDuplicateStaged(f) {
+  return stagedFiles.some(sf =>
+    sf.file.name === f.name &&
+    sf.file.size === f.size &&
+    sf.file.lastModified === f.lastModified);
+}
 function cancelExpenseEdit() {
-  editingExpenseId = null; stagedFiles = [];
+  editingExpenseId = null;
+  stagedFiles.forEach(sf => { if (sf.previewUrl) URL.revokeObjectURL(sf.previewUrl); });
+  stagedFiles = [];
   const f = document.getElementById('e-file'); if (f) f.value = '';
   document.getElementById('exp-form-title').textContent = 'Add Expense';
   document.getElementById('e-cancel').classList.add('hidden');
@@ -623,15 +650,26 @@ function resetExpenseForm() {
   refreshStagedFiles();
 }
 
-// Wire file input events whenever the form is (re)rendered
 function wireExpenseForm() {
   const input = document.getElementById('e-file');
   if (!input) return;
   input.addEventListener('change', () => {
-    for (const f of input.files) stagedFiles.push({ file: f, name: f.name });
+    let added = 0, skipped = 0;
+    for (const f of input.files) {
+      if (isDuplicateStaged(f)) { skipped++; continue; }
+      stagedFiles.push({
+        file: f, name: f.name,
+        previewUrl: (isImageFile(f.name) && f.size < 15000000) ? URL.createObjectURL(f) : null
+      });
+      added++;
+    }
     input.value = '';
     refreshStagedFiles();
+    if (added && skipped) toast(`${added} receipt${added>1?'s':''} attached (${skipped} duplicate${skipped>1?'s':''} skipped)`);
+    else if (added) toast('Receipt attached — fill in the fields and save');
+    else if (skipped) toast('Duplicate photo skipped');
   });
+  refreshStagedFiles();
 }
 
 async function saveExpense() {
@@ -647,6 +685,9 @@ async function saveExpense() {
   if (!vendor) { toast('Vendor required'); return; }
   if (isNaN(amount)) { toast('Amount required (use negative for deposits)'); return; }
 
+  const btn = event ? event.target : null;
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+
   const proj = projectById(projectId);
   const payload = {
     project_id: projectId,
@@ -659,14 +700,13 @@ async function saveExpense() {
   let expId = editingExpenseId;
   if (editingExpenseId) {
     const { error } = await db.from('expenses').update(payload).eq('id', editingExpenseId);
-    if (error) { toast(error.message); return; }
+    if (error) { toast(error.message); if (btn) { btn.disabled=false; btn.textContent='Save Expense'; } return; }
   } else {
     const { data, error } = await db.from('expenses').insert(payload).select('id').single();
-    if (error) { toast(error.message); return; }
+    if (error) { toast(error.message); if (btn) { btn.disabled=false; btn.textContent='Save Expense'; } return; }
     expId = data.id;
   }
 
-  // Upload staged receipts
   for (const sf of stagedFiles) {
     const path = expId + '/' + Date.now() + '-' + sf.name.replace(/[^a-zA-Z0-9._-]/g,'_');
     const { error } = await db.storage.from('receipts').upload(path, sf.file, { upsert: true });
@@ -718,7 +758,7 @@ function expenseReceiptHtml(e) {
   const recs = receiptsFor(e.id);
   if (!recs.length) return '<span style="color:var(--muted)">—</span>';
   return recs.map((r, i) => {
-    if (/\.(jpe?g|png|gif|webp|heic)$/i.test(r.filename) || /\.(jpe?g|png|gif|webp|heic)$/i.test(r.storage_path)) {
+    if (isImageFile(r.filename) || isImageFile(r.storage_path)) {
       return `<img class="receipt-thumb" src="receipt-thumb:${r.id}" onclick="openReceipt('${r.id}')" alt="receipt">`;
     }
     return `<div class="receipt-icon" onclick="openReceipt('${r.id}')" title="${esc(r.filename)}">📄</div>`;
@@ -730,7 +770,7 @@ async function openReceipt(receiptId) {
   if (!r) return;
   const { data } = await db.storage.from('receipts').createSignedUrl(r.storage_path, 3600);
   if (!data || !data.signedUrl) { toast('Could not load receipt'); return; }
-  const isImg = /\.(jpe?g|png|gif|webp|heic)$/i.test(r.filename) || /\.(jpe?g|png|gif|webp|heic)$/i.test(r.storage_path);
+  const isImg = isImageFile(r.filename) || isImageFile(r.storage_path);
   const modal = document.createElement('div');
   modal.id = 'receipt-modal';
   modal.innerHTML = `<button class="modal-close" onclick="this.parentElement.remove()">×</button>
@@ -740,20 +780,13 @@ async function openReceipt(receiptId) {
   document.body.appendChild(modal);
 }
 
-// Stub source to avoid fetching every thumbnail eagerly; replaced on demand
-const origThumb = expenseReceiptHtml;
-
 function renderExpWeekly() {
   const body = document.getElementById('exp-body');
   body.innerHTML = renderExpenseForm();
   wireExpenseForm();
 
-  // Resolve thumbnails asynchronously (signed URLs)
-  hydrateThumbs();
-
   const byWeek = {};
   expenses.forEach(e => { (byWeek[e.expense_date] = byWeek[e.expense_date] || []).push(e); });
-  // Group by actual Monday-start week
   const weeks = {};
   Object.keys(byWeek).forEach(d => {
     const mon = isoDate(mondayOf(new Date(d + 'T00:00')));
@@ -774,14 +807,14 @@ function renderExpWeekly() {
       const pc = projectClientName(e.project_id);
       return `<tr>
         <td style="white-space:nowrap">${fmtDate(e.expense_date)}</td>
+        <td><div>${esc(pc.proj)}</div><div style="font-size:11px;color:var(--muted)">${esc(pc.cli)}</div></td>
         <td>
           <div>${esc(e.vendor)}</div>
-          ${e.notes ? `<div class="row-sub" style="font-size:11px;color:var(--muted)">${esc(e.notes)}</div>` : ''}
+          ${e.notes ? `<div style="font-size:11px;color:var(--muted)">${esc(e.notes)}</div>` : ''}
         </td>
         <td class="hide-sm"><span class="exp-cat ${catClass(e.category)}">${esc(e.category||'Other')}</span></td>
-        <td class="hide-sm"><div>${esc(pc.proj)}</div><div style="font-size:11px;color:var(--muted)">${esc(pc.cli)}</div></td>
-        <td style="text-align:center">${expenseReceiptHtml(e)}</td>
         <td style="text-align:right;white-space:nowrap" class="${Number(e.amount)<0?'exp-total-neg':'exp-total-pos'}">${fmtMoney(e.amount)}</td>
+        <td style="text-align:center">${expenseReceiptHtml(e)}</td>
         <td style="text-align:right"><span class="row-actions">
           <button class="btn tiny secondary" onclick="editExpense('${e.id}')">Edit</button>
           <button class="btn tiny secondary" onclick="deleteExpense('${e.id}')">✕</button>
@@ -797,15 +830,16 @@ function renderExpWeekly() {
               <span style="padding:10px 12px">${fmtMoney(total)}${negTotal ? ` <small style="color:var(--good);font-weight:400">(incl. deposits ${fmtMoney(negTotal)})</small>` : ''}</span>
             </th>
           </tr>
-          <tr><th>Date</th><th>Vendor</th><th class="hide-sm">Category</th><th class="hide-sm">Project</th><th style="text-align:center">Receipt</th><th style="text-align:right">Amount</th><th></th></tr></thead>
+          <tr><th>Date</th><th>Project</th><th>Vendor</th><th class="hide-sm">Category</th><th style="text-align:right">Amount</th><th style="text-align:center">Receipt</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`);
   });
+
+  hydrateThumbs();
 }
 
 async function hydrateThumbs() {
-  // Replace receipt-thumb: placeholders with real signed URLs (small list, on demand)
   const imgs = document.querySelectorAll('img[src^="receipt-thumb:"]');
   for (const img of imgs) {
     const rid = img.getAttribute('src').split(':')[1];
@@ -837,7 +871,7 @@ function renderExpByProject() {
   let list = expenses;
   if (expFilterProject) list = list.filter(e => e.project_id === expFilterProject);
   if (!list.length) {
-    body.insertAdjacentHTML('beforeend', '<div class="empty">No expenses found${expFilterProject?" for this project":""}.</div>');
+    body.insertAdjacentHTML('beforeend', `<div class="empty">No expenses found${expFilterProject?" for this project":""}.</div>`);
   }
 
   const groups = {};
@@ -853,8 +887,8 @@ function renderExpByProject() {
       <td style="white-space:nowrap">${fmtDate(e.expense_date)}</td>
       <td><div>${esc(e.vendor)}</div>${e.notes ? `<div style="font-size:11px;color:var(--muted)">${esc(e.notes)}</div>` : ''}</td>
       <td class="hide-sm"><span class="exp-cat ${catClass(e.category)}">${esc(e.category||'Other')}</span></td>
-      <td style="text-align:center">${expenseReceiptHtml(e)}</td>
       <td style="text-align:right;white-space:nowrap" class="${Number(e.amount)<0?'exp-total-neg':'exp-total-pos'}">${fmtMoney(e.amount)}</td>
+      <td style="text-align:center">${expenseReceiptHtml(e)}</td>
       <td style="text-align:right"><span class="row-actions">
         <button class="btn tiny secondary" onclick="editExpenseSwitchTab('${e.id}')">Edit</button>
         <button class="btn tiny secondary" onclick="deleteExpense('${e.id}')">✕</button>
@@ -869,7 +903,7 @@ function renderExpByProject() {
               <span style="padding:10px 12px">${fmtMoney(total)}</span>
             </th>
           </tr>
-          <tr><th>Date</th><th>Vendor</th><th class="hide-sm">Category</th><th style="text-align:center">Receipt</th><th style="text-align:right">Amount</th><th></th></tr></thead>
+          <tr><th>Date</th><th>Vendor</th><th class="hide-sm">Category</th><th style="text-align:right">Amount</th><th style="text-align:center">Receipt</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`);
