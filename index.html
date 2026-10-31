@@ -2906,6 +2906,237 @@ function invBuildPdf(v) {
 
   return doc.output('blob');
 }
+function invMoney(n) {
+  return '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// ---------- logo loader (falls back to text if logo.png absent) ----------
+let INV_LOGO_DATAURL = null;
+(function () {
+  try {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const MAXW = 600;
+        const scale = Math.min(1, MAXW / img.naturalWidth);
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.naturalWidth * scale);
+        c.height = Math.round(img.naturalHeight * scale);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        INV_LOGO_DATAURL = c.toDataURL('image/png');
+      } catch (e) {}
+    };
+    img.src = 'logo.png';
+  } catch (e) {}
+})();
+
+// ---------- grouping override: Item Type = category ----------
+function invGroupRows(v, items) {
+  const time = items.filter(i => i.source_type === 'time');
+  const exp  = items.filter(i => i.source_type === 'expense' && !invIsDeposit(i));
+  const deps = items.filter(i => !i.is_percent && invIsDeposit(i));
+  const adj  = items.filter(invIsManual).filter(i => !i.is_percent);
+  const g = v.grouping || 'by_task';
+
+  const expRow = i => {
+    const d = invSrcDate(i.source_entry_id, 'expense');
+    const desc = (d ? invMdy(d) + ' - ' : '') + (i.description || '');
+    return { type: i.item_type || 'Expense', desc: desc + (i.item_notes ? '\n' + i.item_notes : ''),
+             qty: 1, price: Number(i.unit_price), amount: invItemAmount(i) };
+  };
+  const depRow = i => {
+    const d = invSrcDate(i.source_entry_id, 'expense');
+    return { type: 'Deposit', desc: (d ? invMdy(d) + ' - ' : '') + 'Deposit',
+             qty: 1, price: Number(i.unit_price), amount: invItemAmount(i) };
+  };
+  const depSum = deps.length ? { type: 'Deposit',
+    desc: 'Deposits received (' + deps.length + ' draw' + (deps.length === 1 ? '' : 's') + ')',
+    qty: 1, price: deps.reduce((s, i) => s + invItemAmount(i), 0),
+    amount: deps.reduce((s, i) => s + invItemAmount(i), 0) } : null;
+
+  if (g === 'detail') {
+    return [
+      ...time.map(i => ({ type: 'Labor',
+        desc: i.description + (invDateRange([i]) ? ' ' + invDateRange([i]) : '') + (i.item_notes ? '\n' + i.item_notes : ''),
+        qty: i.quantity, price: i.unit_price, amount: invItemAmount(i) })),
+      ...exp.map(expRow),
+      ...deps.map(depRow),
+      ...adj.map(i => ({ type: i.item_type || 'Adjustment', desc: i.description || 'Adjustment',
+        qty: 1, price: Number(i.unit_price), amount: invItemAmount(i) })),
+    ];
+  }
+  if (g === 'by_task') {
+    const byKey = {};
+    time.forEach(i => {
+      const k = i.description + '|' + i.unit_price;
+      (byKey[k] = byKey[k] || { qty: 0, amount: 0, rows: [] });
+      byKey[k].qty += Number(i.quantity || 0);
+      byKey[k].amount += invItemAmount(i);
+      byKey[k].rows.push(i);
+    });
+    const labor = Object.values(byKey).map(grp => {
+      const first = grp.rows[0], rng = invDateRange(grp.rows);
+      return { type: 'Labor', desc: first.description + (rng ? '\n' + rng : '') + (first.item_notes ? '\n' + first.item_notes : ''),
+               qty: grp.qty, price: first.unit_price, amount: grp.amount };
+    });
+    return [
+      ...labor,
+      ...exp.map(expRow),
+      ...(depSum ? [depSum] : []),
+      ...adj.map(i => ({ type: i.item_type || 'Adjustment', desc: i.description || 'Adjustment',
+        qty: 1, price: Number(i.unit_price), amount: invItemAmount(i) })),
+    ];
+  }
+  // by_category
+  const rows = [];
+  if (time.length) rows.push({ type: 'Labor', desc: 'Labor' + (invDateRange(time) ? '\n' + invDateRange(time) : ''),
+    qty: time.reduce((s, i) => s + Number(i.quantity || 0), 0),
+    price: time.every(i => Number(i.unit_price) === Number(time[0].unit_price)) ? time[0].unit_price : null,
+    amount: time.reduce((s, i) => s + invItemAmount(i), 0) });
+  const catExp = {};
+  exp.forEach(i => { (catExp[i.item_type] = catExp[i.item_type] || { amount: 0 }).amount += invItemAmount(i); });
+  Object.keys(catExp).forEach(k => rows.push({ type: k, desc: k, qty: 1, price: catExp[k].amount, amount: catExp[k].amount }));
+  if (depSum) rows.push(depSum);
+  adj.forEach(i => rows.push({ type: i.item_type || 'Adjustment', desc: i.description || 'Adjustment',
+    qty: 1, price: Number(i.unit_price), amount: invItemAmount(i) }));
+  return rows;
+}
+
+// ---------- invoice PDF builder (restyled) ----------
+function invBuildPdf(v) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const cli = clientById(v.client_id);
+  const items = invItemsFor(v.id);
+  const sub = invSubtotal(items), ohp = invOhp(items), dep = invDeposits(items);
+  const bal = invBalance(items), pctSum = invOhpPctSum(items);
+  const F = 'times';
+
+  // ---- LEFT: logo (or 4G text fallback) + business block ----
+  let nameY;
+  if (INV_LOGO_DATAURL) {
+    const props = doc.getImageProperties(INV_LOGO_DATAURL);
+    const lw = 36, lh = lw * props.height / props.width;
+    doc.addImage(INV_LOGO_DATAURL, 'PNG', 14, 10, lw, lh);
+    nameY = 10 + lh + 9;
+  } else {
+    doc.setFont(F, 'bold'); doc.setFontSize(32);
+    doc.setTextColor(59, 95, 227);
+    doc.text('4G', 14, 27);
+    nameY = 39;
+  }
+  doc.setTextColor(0, 0, 0);
+  doc.setFont(F, 'bold'); doc.setFontSize(13);
+  doc.text(INV_FROM_NAME, 14, nameY);
+  doc.setFont(F, 'normal'); doc.setFontSize(10);
+  let by = nameY + 7;
+  INV_FROM_LINES.forEach(line => { doc.text(line, 14, by); by += 5.5; });
+  doc.text(INV_FROM_CREDS, 14, by);
+  const leftBottom = by;
+
+  // ---- RIGHT: invoice number + dates ----
+  doc.setFont(F, 'bold'); doc.setFontSize(16);
+  doc.text('Invoice ' + v.invoice_number, 196, 24, { align: 'right' });
+  doc.setFont(F, 'normal'); doc.setFontSize(11);
+  doc.text('Issue Date: ' + invMdy(v.issue_date), 196, 31, { align: 'right' });
+  doc.text('Due Date: ' + (v.due_date ? invMdy(v.due_date) : invMdy(v.issue_date) + ' (upon receipt)'), 196, 37, { align: 'right' });
+
+  // ---- RIGHT: client block, aligned opposite the business block ----
+  let rightBottom = 44;
+  if (cli) {
+    doc.setFont(F, 'normal'); doc.setFontSize(10);
+    doc.text('Invoice for:', 196, nameY, { align: 'right' });
+    doc.setFont(F, 'bold'); doc.setFontSize(11);
+    doc.text(cli.name || '', 196, nameY + 7, { align: 'right' });
+    let cy = nameY + 13;
+    doc.setFont(F, 'normal'); doc.setFontSize(9);
+    if (cli.address) {
+      doc.splitTextToSize(cli.address, 70).forEach(line => {
+        doc.text(line, 196, cy, { align: 'right' }); cy += 5;
+      });
+    }
+    rightBottom = cy;
+  }
+
+  // ---- line item table ----
+  const rows = invGroupRows(v, items).map(r => [
+    r.type || '',
+    r.desc || '',
+    r.qty != null ? String(Number(r.qty).toFixed(2).replace(/\.?0+$/, '')) : '',
+    r.price != null ? invMoney(r.price) : '',
+    invMoney(r.amount),
+  ]);
+  if (pctSum) {
+    rows.push(['', 'Overhead & Profit', String(pctSum) + '%', invMoney(sub), invMoney(ohp)]);
+  }
+
+  const startY = Math.max(leftBottom, rightBottom) + 10;
+  doc.autoTable({
+    startY: startY,
+    head: [['Item Type', 'Description', 'Quantity', 'Unit Price', 'Amount']],
+    body: rows,
+    theme: 'grid',
+    styles: { fontSize: 10, cellPadding: 3, valign: 'top', font: F,
+              lineColor: [70, 75, 95], lineWidth: 0.3 },
+    headStyles: { fillColor: [59, 95, 227], textColor: [255, 255, 255],
+                  font: F, fontStyle: 'bold', lineWidth: 0.3, lineColor: [70, 75, 95] },
+    alternateRowStyles: { fillColor: [244, 246, 250] },
+    columnStyles: {
+      0: { cellWidth: 26 },
+      1: { cellWidth: 'auto' },
+      2: { cellWidth: 20, halign: 'right' },
+      3: { cellWidth: 26, halign: 'right' },
+      4: { cellWidth: 28, halign: 'right' },
+    },
+    didParseCell: data => {
+      if (data.section === 'body' && data.column.index === 4) {
+        const txt = String(data.cell.raw || '');
+        if (txt.indexOf('-') !== -1) data.cell.styles.textColor = [46, 158, 91]; // deposits green
+      }
+    },
+  });
+
+  // ---- bottom block: labels hug their numbers ----
+  let y = doc.lastAutoTable.finalY + 10;
+  const tx = 196;
+  if (dep) {
+    doc.setFont(F, 'normal'); doc.setFontSize(11);
+    const dt = invMoney(dep);
+    doc.text('Less deposits received:', tx - doc.getTextWidth(dt) - 5, y, { align: 'right' });
+    doc.text(dt, tx, y, { align: 'right' }); y += 8;
+  }
+  doc.setFont(F, 'bold'); doc.setFontSize(14);
+  const bt = invMoney(bal);
+  doc.text('Balance:', tx - doc.getTextWidth(bt) - 5, y, { align: 'right' });
+  if (bal < 0) doc.setTextColor(46, 158, 91);
+  doc.text(bt, tx, y, { align: 'right' });
+  doc.setTextColor(0, 0, 0);
+  doc.setFont(F, 'normal'); doc.setFontSize(10); y += 11;
+
+  if (v.requested_amount != null) {
+    doc.setFont(F, 'bold'); doc.setFontSize(14);
+    doc.setTextColor(59, 95, 227);
+    doc.text('Amount requested: ' + invMoney(v.requested_amount), tx, y, { align: 'right' });
+    doc.setTextColor(0, 0, 0);
+    doc.setFont(F, 'normal'); doc.setFontSize(10); y += 9;
+  }
+
+  if (v.notes) {
+    doc.setFontSize(10);
+    doc.text(doc.splitTextToSize(v.notes, 180), 14, y);
+  }
+
+  // ---- page footers ----
+  const pages = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setFont(F, 'normal'); doc.setFontSize(8); doc.setTextColor(130);
+    doc.text('Page ' + i + ' of ' + pages, 196, 290, { align: 'right' });
+  }
+  doc.setTextColor(0, 0, 0);
+
+  return doc.output('blob');
+}
 </script>
 </body>
 </html>
