@@ -2330,9 +2330,7 @@ async function invPdfButton(id, btn) {
       } catch (err) { if (err.name === 'AbortError') return; }
     }
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = fname;
-    document.body.appendChild(a); a.click(); a.remove();
+    window.open(url, '_blank');  // opens in browser PDF viewer
     setTimeout(() => URL.revokeObjectURL(url), 4000);
   } catch (err) {
     toast('PDF library failed to load (VPN blocking CDN?)');
