@@ -2797,86 +2797,7 @@ function invBuildPdf(v) {
 
   return doc.output('blob');
 }
-function invBlobToDataUrl(blob) {
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload = () => resolve(fr.result);
-    fr.onerror = reject;
-    fr.readAsDataURL(blob);
-  });
-}
-
-// ---- helper: footers on every page ----
-function invApplyFooters(doc) {
-  const pages = doc.internal.getNumberOfPages();
-  for (let i = 1; i <= pages; i++) {
-    doc.setPage(i);
-    doc.setFont('times', 'normal'); doc.setFontSize(8); doc.setTextColor(130);
-    doc.text('Page ' + i + ' of ' + pages, 196, 290, { align: 'right' });
-  }
-  doc.setTextColor(0, 0, 0);
-}
-
-// ---- receipt pages ----
-async function invAttachReceipts(doc, v) {
-  const snapExpenses = invItemsFor(v.id).filter(i => i.source_type === 'expense');
-  let attached = 0, skipped = 0;
-
-  for (const it of snapExpenses) {
-    const exp = expenses.find(e => e.id === it.source_entry_id);
-    if (!exp) continue;
-    const files = (typeof receiptFiles !== 'undefined' ? receiptFiles : [])
-      .filter(f => f.expense_id === exp.id);
-    if (!files.length) continue;
-
-    for (const f of files) {
-      let dataUrl = null;
-      const isPdf = /\.pdf$/i.test(f.filename || '') || (f.mime || '').includes('pdf');
-      try {
-        if (!isPdf) {
-          const { data, error } = await db.storage.from('receipts').createSignedUrl(f.storage_path, 3600);
-          if (error || !data || !data.signedUrl) { skipped++; continue; }
-          const resp = await fetch(data.signedUrl);
-          if (!resp.ok) { skipped++; continue; }
-          dataUrl = await invBlobToDataUrl(await resp.blob());
-        }
-      } catch (e) { skipped++; continue; }
-
-      doc.addPage();
-      // caption
-      doc.setFont('times', 'bold'); doc.setFontSize(14); doc.setTextColor(0, 0, 0);
-      doc.text('Receipt — ' + (exp.vendor || exp.category || 'Expense'), 14, 20);
-      doc.setFont('times', 'normal'); doc.setFontSize(10);
-      doc.text('Date: ' + invMdy(exp.expense_date) + '   Amount: ' + fmtMoney(exp.amount) +
-               '   Category: ' + (exp.category || '—'), 14, 28);
-      if (exp.notes) doc.text(doc.splitTextToSize('Notes: ' + exp.notes, 180), 14, 34);
-
-      if (isPdf || !dataUrl) {
-        doc.setFontSize(9); doc.setTextColor(130);
-        doc.text('"' + (f.filename || 'receipt') + '" is a PDF receipt — not embedded in this document.', 14, 50);
-        doc.setTextColor(0, 0, 0);
-      } else {
-        try {
-          const props = doc.getImageProperties(dataUrl);
-          const maxW = 182, maxH = 235; // usable area below the caption
-          const scale = Math.min(maxW / props.width, maxH / props.height, 1);
-          const w = props.width * scale, h = props.height * scale;
-          doc.addImage(dataUrl, undefined, 14, 44, w, h);
-          attached++;
-        } catch (e) {
-          doc.setFontSize(9); doc.setTextColor(130);
-          doc.text('Could not render "' + (f.filename || 'receipt') + '" (unsupported image format).', 14, 50);
-          doc.setTextColor(0, 0, 0);
-          skipped++;
-        }
-      }
-    }
-  }
-  return { attached, skipped };
-}
-
-// ---- invoice document builder (teal header, spacing, costs-as-of) ----
-function invBuildDoc(v) {
+function invBuildPdf(v) {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF();
   const cli = clientById(v.client_id);
@@ -2890,6 +2811,101 @@ function invBuildDoc(v) {
   doc.text('4G', 14, 26);
   doc.setTextColor(0, 0, 0);
   doc.setFontSize(13);
+  doc.text(INV_FROM_NAME, 14, 38);
+  doc.setFont('times', 'normal'); doc.setFontSize(10);
+  let by = 45;
+  INV_FROM_LINES.forEach(line => { doc.text(line, 14, by); by += 5.5; });
+  doc.text(INV_FROM_CREDS, 14, by);
+
+  // ---- RIGHT: invoice number + dates ----
+  doc.setFont('times', 'bold'); doc.setFontSize(16);
+  doc.text('Invoice ' + v.invoice_number, 196, 24, { align: 'right' });
+  doc.setFont('times', 'normal'); doc.setFontSize(11);
+  doc.text('Issue Date: ' + invMdy(v.issue_date), 196, 32, { align: 'right' });
+  doc.text('Due Date: ' + (v.due_date ? invMdy(v.due_date) : invMdy(v.issue_date) + ' (upon receipt)'), 196, 38, { align: 'right' });
+
+  // ---- client block ----
+  let cy = 52;
+  if (cli) {
+    doc.setFont('times', 'bold'); doc.setFontSize(12);
+    doc.text('Invoice For', 130, cy); cy += 7;
+    doc.text(cli.name || '', 130, cy); cy += 6;
+    doc.setFont('times', 'normal'); doc.setFontSize(10);
+    if (cli.address) doc.text(doc.splitTextToSize(cli.address, 66), 130, cy);
+  }
+
+  // ---- line item table (TEAL header #1abc9c) ----
+  const rows = invGroupRows(v, items).map(r => [
+    r.type || r.label || '',
+    r.desc || [r.sub, r.notes].filter(Boolean).join('\n') || '',
+    r.qty != null ? String(Number(r.qty).toFixed(2)) : '',
+    (r.price != null ? r.price : (r.rate != null ? r.rate : null)) != null ? fmtMoney(r.price != null ? r.price : r.rate) : '',
+    fmtMoney(r.amount),
+  ]);
+  if (pctSum) {
+    rows.push(['', 'Overhead & Profit', String(pctSum) + '%', fmtMoney(sub), fmtMoney(ohp)]);
+  }
+
+  doc.autoTable({
+    startY: 72,
+    head: [['Item Type', 'Description', 'Quantity', 'Unit Price', 'Amount']],
+    body: rows,
+    theme: 'grid',
+    styles: { fontSize: 10, cellPadding: 3, valign: 'top', font: 'times' },
+    headStyles: { fillColor: [26, 188, 156], textColor: [255, 255, 255], font: 'times', fontStyle: 'bold' },
+    columnStyles: {
+      0: { cellWidth: 26 },
+      1: { cellWidth: 'auto' },
+      2: { cellWidth: 20, halign: 'right' },
+      3: { cellWidth: 26, halign: 'right' },
+      4: { cellWidth: 28, halign: 'right' },
+    },
+    didParseCell: data => {
+      if (data.section === 'body' && data.column.index === 4) {
+        const txt = String(data.cell.raw || '');
+        if (txt.indexOf('-') !== -1) data.cell.styles.textColor = [46, 158, 91]; // deposits green
+      }
+    },
+  });
+
+  // ---- bottom block ----
+  let y = doc.lastAutoTable.finalY + 9;
+  const tx = 196;
+  doc.setFont('times', 'normal'); doc.setFontSize(11);
+  if (dep) {
+    doc.text('Less deposits received:', tx - 62, y, { align: 'right' });
+    doc.text(fmtMoney(dep), tx, y, { align: 'right' }); y += 8;
+  }
+  doc.setFont('times', 'bold'); doc.setFontSize(14);
+  doc.text('Balance:', tx - 62, y, { align: 'right' });
+  if (bal < 0) doc.setTextColor(46, 158, 91);
+  doc.text(fmtMoney(bal), tx, y, { align: 'right' });
+  doc.setTextColor(0, 0, 0);
+  doc.setFont('times', 'normal'); doc.setFontSize(10); y += 11;
+
+  if (v.requested_amount != null) {
+    doc.setFont('times', 'bold'); doc.setFontSize(14);
+    doc.setTextColor(59, 95, 227);
+    doc.text('Amount requested: ' + fmtMoney(v.requested_amount), tx, y, { align: 'right' });
+    doc.setTextColor(0, 0, 0);
+    doc.setFont('times', 'normal'); doc.setFontSize(10); y += 9;
+  }
+
+  // ---- COSTS AS OF LINE ----
+  doc.setFontSize(9);
+  doc.text('Costs as of ' + invMdy(v.issue_date), 14, y);
+
+  // ---- page footers ----
+  const pages = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8); doc.setTextColor(130);
+    doc.text('Page ' + i + ' of ' + pages, 196, 290, { align: 'right' });
+  }
+  doc.setTextColor(0, 0, 0);
+
+  return doc.output('blob');
+}
 </script>
 </body>
 </html>
