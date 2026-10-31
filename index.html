@@ -1675,6 +1675,642 @@ function estUpgradeAddressField() {
     estUpgradeAddressField();
   };
 })();
+(function () {
+  const st = document.createElement('style');
+  st.textContent = `
+    .inv-status { display:inline-block; font-size:11px; font-weight:600; padding:2px 10px; border-radius:20px; text-transform:uppercase; letter-spacing:.3px; }
+    .inv-status.draft { background:#f0edff; color:var(--p); }
+    .inv-status.sent { background:#e8f3fd; color:#1a6fc4; }
+    .inv-status.paid { background:#e8f8ee; color:#1f8a4c; }
+    .inv-status.void { background:#f2f2f5; color:var(--muted); }
+    .inv-lock { font-size:10px; padding:1px 6px; border-radius:4px; background:#f0edff; color:var(--p); white-space:nowrap; }
+    .inv-amt-neg { color:var(--good); font-weight:600; }
+    .inv-amt-pos { font-weight:600; }
+    #view-invoices textarea, #view-invoices input, #view-invoices select { font-size:14px; }
+    .inv-preview-note { font-size:11px; color:var(--muted); margin-top:8px; }
+    table.inv-extra input { padding:7px 8px; font-size:13px; }
+  `;
+  document.head.appendChild(st);
+})();
+
+// ---------- state ----------
+const INV_BUSINESS_NAME = EST_BUSINESS_NAME || '4th Generation';
+const INV_STATUSES = ['draft', 'sent', 'paid', 'void'];
+const INV_GROUPINGS = [['detail', 'Detail (every entry + notes)'], ['by_task', 'By task (labor summed)'], ['by_category', 'By category']];
+
+let invoices = [], invoiceItems = [];
+let invMode = 'list';            // 'list' | 'edit'
+let editingInvoiceId = null;
+let invExtra = [];               // manual adjustment lines {description, amount}
+let invOhpPct = 0;               // single OH&P %
+let pdfLibsLoading = null;
+
+// ---------- fetch / hooks ----------
+async function fetchInvoices() {
+  const { data, error } = await db.from('invoices').select('*').order('invoice_number', { ascending: false }).limit(500);
+  if (error) { toast('invoices: ' + error.message); return []; }
+  return data || [];
+}
+async function fetchInvoiceItems() {
+  const { data, error } = await db.from('invoice_items').select('*');
+  if (error) { toast('invoice_items: ' + error.message); return []; }
+  return data || [];
+}
+function invItemsFor(invId) { return invoiceItems.filter(i => i.invoice_id === invId).sort((a,b) => (a.position||0)-(b.position||0)); }
+function invoiceById(id) { return invoices.find(i => i.id === id) || null; }
+function invoiceNumberFor(id) { const v = invoiceById(id); return v ? v.invoice_number : '?'; }
+
+async function invLoadAndRender() {
+  [invoices, invoiceItems] = await Promise.all([fetchInvoices(), fetchInvoiceItems()]);
+  timeEntries = await fetchTime();
+  expenses = await fetchExpenses();
+  renderInvoices();
+}
+document.querySelectorAll('nav button[data-view="invoices"]').forEach(btn => {
+  btn.addEventListener('click', invLoadAndRender);
+});
+
+// ---------- numbering ----------
+function padInvNumber(n) { return String(n).padStart(4, '0'); }
+function nextInvoiceNumber() {
+  let max = 0;
+  invoices.forEach(v => { const m = /^\d+$/.test(String(v.invoice_number||'')) ? parseInt(v.invoice_number, 10) : 0; if (m > max) max = m; });
+  return padInvNumber(max + 1);
+}
+
+// ---------- unbilled pools ----------
+function invUnbilledTime(pid) { return timeEntries.filter(e => e.project_id === pid && !e.invoice_id); }
+function invUnbilledExpenses(pid) { return expenses.filter(e => e.project_id === pid && !e.invoice_id); }
+function invTimeValue(list) { return list.reduce((s,t) => { const r = effectiveRate(t); return s + (r != null ? (t.minutes/60)*r : 0); }, 0); }
+
+// ---------- math ----------
+// net = labor + expenses (deposits are negative expenses, so they pull net down naturally)
+// OH&P = pct × net ; total = net + OH&P
+function invItemAmount(it) { return Number(it.quantity || 0) * Number(it.unit_price || 0); }
+function invNet(items) { return items.filter(i => !i.is_percent).reduce((s, i) => s + invItemAmount(i), 0); }
+function invOhp(items) { return items.filter(i => i.is_percent).reduce((s, i) => s + (Number(i.unit_price||0)/100) * invNet(items), 0); }
+function invTotal(items) { return invNet(items) + invOhp(items); }
+function invIsManual(i) { return i.source_type === 'manual'; }
+
+// ---------- dispatcher ----------
+function renderInvoices() {
+  if (invMode === 'edit') renderInvEditor(); else renderInvHome();
+}
+
+// ==================================================================
+// HOME VIEW — unbilled pools + create + open invoices (bottom)
+// ==================================================================
+function renderInvHome() {
+  const el = document.getElementById('view-invoices');
+
+  const poolCards = projects.filter(p => p.active !== false).map(p => {
+    const unbT = invUnbilledTime(p.id), unbE = invUnbilledExpenses(p.id);
+    const val = invTimeValue(unbT) + unbE.reduce((s,e) => s + Number(e.amount||0), 0);
+    if (!unbT.length && !unbE.length && !invoiceItems.some(i => i.invoice_id && (invHasProject(invoiceById(i.invoice_id), p.id)))) {
+      // still show — user may want an empty statement? No: hide projects with nothing unbilled
+      return '';
+    }
+    const cli = clientById(p.client_id);
+    return `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div>
+          <strong>${esc(cli ? cli.name : '—')} — ${esc(p.name)}</strong>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">
+            ${unbT.length ? unbT.reduce((s,t)=>s+t.minutes,0)/60 + ' hrs' : 'no unbilled hours'}
+            ${unbE.length ? ' · ' + unbE.length + ' unbilled expense' + (unbE.length===1?'':'s') : ''}
+            ${unbE.some(e=>Number(e.amount)<0) ? ' (incl. deposits)' : ''}
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <strong>${fmtMoney(val)}</strong>
+          ${(unbT.length || unbE.length) ? `<button class="btn small" onclick="invCreate('${p.id}')">Create Invoice</button>` : '<span style="font-size:12px;color:var(--muted)">nothing unbilled</span>'}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const openCards = invoices.map(v => {
+    const items = invItemsFor(v.id);
+    const cli = clientById(v.client_id);
+    const p = projectById(v.project_id);
+    const total = invTotal(items);
+    const label = INV_GROUPINGS.find(g => g[0] === v.grouping);
+    return `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;flex-wrap:wrap;gap:6px">
+        <strong>#${esc(v.invoice_number)} <span style="color:var(--muted);font-weight:400">·</span> ${esc(cli ? cli.name : '—')}${p ? ' — ' + esc(p.name) : ''}</strong>
+        <span class="row-actions">
+          <button class="btn tiny secondary" onclick="invOpenEdit('${v.id}')">Open</button>
+          <button class="btn tiny secondary" onclick="invPdfButton('${v.id}', this)">📄 PDF</button>
+          <button class="btn tiny secondary" onclick="invDelete('${v.id}')">✕</button>
+        </span>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;font-size:13px;color:var(--muted)">
+        <span>Issued ${fmtDate(v.issue_date)} · ${esc(label ? label[1] : v.grouping)}</span>
+        <span><span class="inv-status ${esc(v.status||'draft')}">${esc(v.status || 'draft')}</span>
+          <strong class="${total < 0 ? 'inv-amt-neg' : 'inv-amt-pos'}" style="margin-left:8px;color:var(--text)">${fmtMoney(total)}</strong>
+          ${v.requested_amount != null ? ` · draw ${fmtMoney(v.requested_amount)}` : ''}</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="view-title">Invoices
+      <span style="font-size:14px;color:var(--muted)">${invoices.length} open</span>
+    </div>
+    ${poolCards || '<div class="empty">No projects with unbilled activity.</div>'}
+    <div style="height:24px"></div>
+    <div class="view-title" style="font-size:16px">Open Invoices</div>
+    ${openCards || '<div class="empty">No invoices. Create one from a project above — deleting it later releases the hours and expenses back to unbilled.</div>'}
+    <div class="inv-preview-note">Workflow reminder: an invoice snapshots and locks everything unbilled on its project. Recording a draw? Delete the invoice afterwards and log the draw as a Deposit expense — the entries unlock automatically.</div>`;
+}
+function invHasProject(inv, pid) { return inv && inv.project_id === pid; }
+
+// ==================================================================
+// CREATE — snapshot unbilled entries + stamp them
+// ==================================================================
+async function invCreate(projectId) {
+  const p = projectById(projectId); if (!p) return;
+  const unbT = invUnbilledTime(projectId), unbE = invUnbilledExpenses(projectId);
+  if (!unbT.length && !unbE.length) { toast('Nothing unbilled on this project'); return; }
+
+  const payload = {
+    invoice_number: nextInvoiceNumber(),
+    client_id: p.client_id,
+    project_id: projectId,
+    issue_date: isoDate(new Date()),
+    due_date: null,
+    status: 'draft',
+    grouping: 'by_task',
+    requested_amount: null,
+    title: p.name,
+    notes: null,
+  };
+
+  let invId;
+  let num = payload.invoice_number, saved = false;
+  for (let attempt = 0; attempt < 3 && !saved; attempt++) {
+    const { data, error } = await db.from('invoices').insert({ ...payload, invoice_number: num }).select('id').single();
+    if (!error) { invId = data.id; saved = true; }
+    else if (/unique|duplicate/i.test(error.message)) num = padInvNumber(parseInt(num, 10) + 1);
+    else { toast(error.message); return; }
+  }
+  if (!saved) { toast('Could not assign invoice number'); return; }
+
+  await invPullUnbilled(invId);
+  invOpenEdit(invId);
+}
+
+// snapshot + stamp every currently-unbilled entry on the invoice's project
+async function invPullUnbilled(invId) {
+  const v = invoiceById(invId);
+  if (!v || !v.project_id) return;
+  const pid = v.project_id;
+  const unbT = invUnbilledTime(pid), unbE = invUnbilledExpenses(pid);
+  if (!unbT.length && !unbE.length) { toast('Already up to date'); return 0; }
+
+  const existing = invItemsFor(invId);
+  let pos = existing.reduce((m, i) => Math.max(m, i.position || 0), -1) + 1;
+
+  const rows = [];
+  unbT.forEach(t => {
+    const task = t.task_id ? taskById(t.task_id) : null;
+    const rate = effectiveRate(t) || 0;
+    rows.push({
+      invoice_id: invId, position: pos++, source_type: 'time', source_entry_id: t.id,
+      description: task ? task.name : 'Labor', item_type: 'Labor',
+      item_notes: t.notes || '',
+      quantity: Number((t.minutes / 60).toFixed(4)), unit: 'hr', unit_price: rate, is_percent: false,
+    });
+  });
+  unbE.forEach(e => {
+    rows.push({
+      invoice_id: invId, position: pos++, source_type: 'expense', source_entry_id: e.id,
+      description: e.vendor || 'Expense', item_type: e.category || 'Other',
+      item_notes: e.notes || '',
+      quantity: 1, unit: null, unit_price: Number(e.amount), is_percent: false,
+    });
+  });
+
+  const { error: insErr } = await db.from('invoice_items').insert(rows);
+  if (insErr) { toast(insErr.message); return 0; }
+
+  // stamp sources (locks them)
+  const tIds = unbT.map(t => t.id), eIds = unbE.map(e => e.id);
+  if (tIds.length) await db.from('time_entries').update({ invoice_id: invId }).in('id', tIds);
+  if (eIds.length) await db.from('expenses').update({ invoice_id: invId }).in('id', eIds);
+
+  await invLoadAndRender();
+  return rows.length;
+}
+
+// ==================================================================
+// EDITOR
+// ==================================================================
+function invOpenEdit(id) {
+  const v = invoiceById(id); if (!v) return;
+  invMode = 'edit'; editingInvoiceId = id;
+  const extra = invItemsFor(id).filter(invIsManual).filter(i => !i.is_percent);
+  invExtra = extra.map(i => ({ description: i.description, amount: Number(i.unit_price) }));
+  const pct = invItemsFor(id).find(i => i.is_percent);
+  invOhpPct = pct ? Number(pct.unit_price) : 0;
+  renderInvoices();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+function invBackToList() { invMode = 'list'; editingInvoiceId = null; renderInvoices(); }
+
+function renderInvEditor() {
+  const el = document.getElementById('view-invoices');
+  const v = invoiceById(editingInvoiceId);
+  if (!v) { invBackToList(); return; }
+  const items = invItemsFor(v.id);
+  const net = invNet(items), ohp = invOhp(items);
+
+  el.innerHTML = `
+    <div class="view-title">Invoice #${esc(v.invoice_number)} ${v.title ? '— ' + esc(v.title) : ''}
+      <span class="row-actions">
+        <button class="btn small secondary" onclick="invBackToList()">← Back</button>
+        <button class="btn small secondary" onclick="invPdfButton('${v.id}', this)">📄 PDF / Share</button>
+      </span>
+    </div>
+
+    <div class="card">
+      <div class="form-row">
+        <div><label>Issue date</label><input type="date" id="iv-issue" value="${esc(v.issue_date)}"></div>
+        <div><label>Due date</label><input type="date" id="iv-due" value="${esc(v.due_date || '')}"></div>
+        <div><label>Status</label><select id="iv-status">
+          ${INV_STATUSES.map(s => `<option value="${s}"${v.status === s ? ' selected':''}>${s}</option>`).join('')}
+        </select></div>
+        <div><label>Requested draw ($)</label><input type="number" id="iv-requested" step="1" inputmode="decimal" placeholder="e.g. 10000" value="${v.requested_amount != null ? v.requested_amount : ''}"></div>
+      </div>
+      <div class="form-row">
+        <div><label>Grouping</label><select id="iv-grouping" onchange="invSetGrouping(this.value)">
+          ${INV_GROUPINGS.map(g => `<option value="${g[0]}"${v.grouping === g[0] ? ' selected':''}>${esc(g[1])}</option>`).join('')}
+        </select></div>
+        <div><label>OH&amp;P (% of net)</label><input type="number" id="iv-ohp" step="0.1" inputmode="decimal" value="${invOhpPct || ''}" oninput="invOhpLive(this.value)"></div>
+      </div>
+      <div class="form-row"><div><label>Notes (shown on PDF)</label>
+        <textarea id="iv-notes" rows="2" placeholder="Optional">${esc(v.notes || '')}</textarea>
+      </div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" onclick="invSave(this)">Save Invoice</button>
+        <button class="btn secondary" onclick="invPullUnbilled('${v.id}')">⟳ Pull new unbilled activity</button>
+        <button class="btn secondary" onclick="invDelete('${v.id}')">Delete invoice (unlocks entries)</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="font-weight:600;margin-bottom:8px">Manual adjustment lines (rare)</div>
+      <table class="inv-extra"><tbody id="iv-extra"></tbody></table>
+      <button class="btn small secondary" style="margin-top:6px" onclick="invAddExtra()">＋ Add line</button>
+      <div class="inv-preview-note">Snapshot lines from time &amp; expenses are managed by the ⟳ button — edit the underlying entries before invoicing (locked once snapshotted).</div>
+    </div>
+
+    <div class="card">
+      <div style="font-weight:600;margin-bottom:8px">Preview — ${esc((INV_GROUPINGS.find(g => g[0] === v.grouping) || ['',v.grouping])[1])}</div>
+      <div class="grid-wrap">${invPreviewTable(v, items, net, ohp)}</div>
+    </div>`;
+  invRenderExtra();
+}
+
+function invSetGrouping(g) {
+  const v = invoiceById(editingInvoiceId); if (!v) return;
+  db.from('invoices').update({ grouping: g, updated_at: new Date().toISOString() }).eq('id', v.id)
+    .then(({ error }) => {
+      if (error) { toast(error.message); return; }
+      v.grouping = g;
+      invItemsFor(v.id).forEach(() => {}); // no-op; items unchanged
+      renderInvoices();
+    });
+}
+function invOhpLive(val) { invOhpPct = val === '' ? 0 : (parseFloat(val) || 0); invRefreshPreviewTotals(); }
+
+// ---- manual extra lines ----
+function invRenderExtra() {
+  const tb = document.getElementById('iv-extra'); if (!tb) return;
+  tb.innerHTML = invExtra.map((x, i) => `<tr>
+    <td><input type="text" placeholder="Description" value="${esc(x.description)}" oninput="invExtra[${i}].description=this.value"></td>
+    <td style="width:120px"><input type="number" step="0.01" inputmode="decimal" placeholder="Amount" value="${x.amount ?? ''}" oninput="invExtra[${i}].amount=this.value===''?0:parseFloat(this.value)"></td>
+    <td style="width:40px;text-align:right"><button class="btn tiny secondary" onclick="invExtra.splice(${i},1);invRenderExtra()">✕</button></td>
+  </tr>`).join('');
+}
+function invAddExtra() { invExtra.push({ description: '', amount: 0 }); invRenderExtra(); }
+
+// ---- save header + rewrite manual/percent lines ----
+async function invSave(btn) {
+  const v = invoiceById(editingInvoiceId); if (!v) return;
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const upd = {
+      issue_date: document.getElementById('iv-issue').value || v.issue_date,
+      due_date: document.getElementById('iv-due').value || null,
+      status: document.getElementById('iv-status').value,
+      requested_amount: document.getElementById('iv-requested').value === '' ? null : Number(document.getElementById('iv-requested').value),
+      notes: document.getElementById('iv-notes').value.trim() || null,
+      grouping: document.getElementById('iv-grouping').value,
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = await db.from('invoices').update(upd).eq('id', v.id);
+    if (error) { toast(error.message); return; }
+
+    // rewrite manual + percent lines (positions continue after snapshots)
+    const { error: dErr } = await db.from('invoice_items').delete().eq('invoice_id', v.id).eq('source_type', 'manual');
+    if (dErr) { toast(dErr.message); return; }
+    const snapshotMax = invItemsFor(v.id).filter(i => !invIsManual(i)).reduce((m, i) => Math.max(m, i.position || 0), -1);
+    const rows = [];
+    let pos = snapshotMax + 1;
+    if (invOhpPct > 0) {
+      rows.push({ invoice_id: v.id, position: pos++, source_type: 'manual', source_entry_id: null,
+        description: 'Overhead & Profit', item_type: 'Overhead & Profit', item_notes: '',
+        quantity: 1, unit: null, unit_price: invOhpPct, is_percent: true });
+    }
+    invExtra.forEach(x => {
+      if (x.description && Number(x.amount)) {
+        rows.push({ invoice_id: v.id, position: pos++, source_type: 'manual', source_entry_id: null,
+          description: x.description, item_type: 'Adjustment', item_notes: '',
+          quantity: 1, unit: null, unit_price: Number(x.amount), is_percent: false });
+      }
+    });
+    if (rows.length) {
+      const { error: iErr } = await db.from('invoice_items').insert(rows);
+      if (iErr) { toast(iErr.message); return; }
+    }
+    await invLoadAndRender();
+    toast('Invoice saved');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Save Invoice';
+  }
+}
+
+async function invDelete(id) {
+  const v = invoiceById(id);
+  if (!confirm(`Delete invoice #${v ? v.invoice_number : ''}? All its hours and expenses unlock and return to unbilled.`)) return;
+  // items cascade automatically; stamps clear via ON DELETE SET NULL
+  const { error } = await db.from('invoices').delete().eq('id', id);
+  if (error) { toast(error.message); return; }
+  if (editingInvoiceId === id) { invMode = 'list'; editingInvoiceId = null; }
+  await invLoadAndRender();
+  toast('Invoice deleted — entries unlocked');
+}
+
+// ==================================================================
+// PREVIEW RENDER (grouping happens at display time; detail is preserved)
+// ==================================================================
+function invGroupRows(v, items) {
+  // returns [{label, sub, qty, unit, rate, amount, notes}]
+  const time = items.filter(i => i.source_type === 'time');
+  const exp = items.filter(i => i.source_type === 'expense');
+  const man = items.filter(invIsManual);
+  const g = v.grouping || 'by_task';
+
+  if (g === 'detail') {
+    return [
+      ...time.map(i => ({ label: i.item_type || 'Labor', sub: i.description, notes: i.item_notes,
+        qty: i.quantity, unit: i.unit, rate: i.unit_price, amount: invItemAmount(i) })),
+      ...exp.map(i => ({ label: i.item_type || 'Other', sub: i.description, notes: i.item_notes,
+        qty: null, unit: null, rate: i.unit_price, amount: invItemAmount(i) })),
+      ...man.filter(i => !i.is_percent).map(i => ({ label: i.item_type || 'Adjustment', sub: i.description, notes: '',
+        qty: null, unit: null, rate: i.unit_price, amount: invItemAmount(i) })),
+    ];
+  }
+  if (g === 'by_task') {
+    const byKey = {};
+    time.forEach(i => {
+      const k = i.description + '|' + i.unit_price;
+      (byKey[k] = byKey[k] || { label: 'Labor', sub: i.description, qty: 0, rate: i.unit_price, amount: 0 });
+      byKey[k].qty += Number(i.quantity || 0);
+      byKey[k].amount += invItemAmount(i);
+    });
+    const catExp = {};
+    exp.forEach(i => { (catExp[i.item_type] = catExp[i.item_type] || { label: i.item_type, amount: 0 }).amount += invItemAmount(i); });
+    return [
+      ...Object.values(byKey),
+      ...Object.values(catExp),
+      ...man.filter(i => !i.is_percent).map(i => ({ label: i.item_type, sub: i.description, amount: invItemAmount(i) })),
+    ];
+  }
+  // by_category
+  const rows = [];
+  if (time.length) {
+    rows.push({ label: 'Labor', sub: time.length + ' time entr' + (time.length===1?'y':'ies'),
+      qty: time.reduce((s,i)=>s+Number(i.quantity||0),0), unit: 'hr',
+      rate: time.length && time.every(i => Number(i.unit_price) === Number(time[0].unit_price)) ? time[0].unit_price : null,
+      amount: time.reduce((s,i)=>s+invItemAmount(i),0) });
+  }
+  const catExp = {};
+  exp.forEach(i => { (catExp[i.item_type] = catExp[i.item_type] || { label: i.item_type, amount: 0 }).amount += invItemAmount(i); });
+  return [...rows, ...Object.values(catExp),
+    ...man.filter(i => !i.is_percent).map(i => ({ label: i.item_type, sub: i.description, amount: invItemAmount(i) }))];
+}
+
+function invPreviewTable(v, items, net, ohp) {
+  const rows = invGroupRows(v, items);
+  const pctItems = items.filter(i => i.is_percent);
+  const manualNotes = v.notes;
+  const trs = rows.map(r => `<tr>
+    <td>${esc(r.label || '')}${r.sub ? `<div style="font-size:11px;color:var(--muted)">${esc(r.sub)}</div>` : ''}${r.notes ? `<div style="font-size:11px;color:var(--muted);font-style:italic">${esc(r.notes)}</div>` : ''}</td>
+    <td style="text-align:right;white-space:nowrap">${r.qty != null ? esc(Number(r.qty).toFixed(2).replace(/\.?0+$/,'')) + (r.unit ? ' ' + esc(r.unit) : '') : '—'}</td>
+    <td style="text-align:right;white-space:nowrap">${r.rate != null && !r.isPct ? fmtMoney(r.rate) : '—'}</td>
+    <td class="${Number(r.amount) < 0 ? 'inv-amt-neg' : 'inv-amt-pos'}" style="text-align:right;white-space:nowrap">${fmtMoney(r.amount)}</td>
+  </tr>`).join('');
+
+  return `
+  <table class="est-lines">
+    <thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead>
+    <tbody>${trs || '<tr><td colspan="4" class="empty">No line items</td></tr>'}</tbody>
+  </table>
+  <table class="est-totals" style="width:auto;margin-left:auto">
+    <tr><td style="text-align:right;color:var(--muted)">Net (costs less deposits)</td><td class="${net<0?'inv-amt-neg':'inv-amt-pos'}" style="text-align:right;min-width:110px" id="pv-net">${fmtMoney(net)}</td></tr>
+    ${pctItems.map(i => `<tr><td style="text-align:right;color:var(--muted)">Overhead &amp; Profit (${esc(i.unit_price)}% of net)</td><td style="text-align:right;font-weight:600" class="pv-ohp">${fmtMoney((Number(i.unit_price||0)/100)*net)}</td></tr>`).join('')}
+    <tr><td style="text-align:right;color:var(--muted;font-size:16px"><strong>Total</strong></td><td class="${(net+ohp)<0?'inv-amt-neg':''}" style="text-align:right;font-size:16px;font-weight:700" id="pv-total">${fmtMoney(net + ohp)}</td></tr>
+    ${v.requested_amount != null ? `<tr><td style="text-align:right;color:var(--p)"><strong>Amount requested</strong></td><td style="text-align:right;color:var(--p);font-weight:700">${fmtMoney(v.requested_amount)}</td></tr>` : ''}
+  </table>
+  ${manualNotes ? `<div style="font-size:12px;color:var(--muted);margin-top:8px;white-space:pre-wrap">${esc(manualNotes)}</div>` : ''}`;
+}
+function invRefreshPreviewTotals() {
+  const v = invoiceById(editingInvoiceId); if (!v) return;
+  const items = invItemsFor(v.id).filter(i => !invIsManual(i) || i.is_percent || invExtra.some(x => x.description === i.description));
+  const snap = invItemsFor(v.id).filter(i => !invIsManual(i));
+  let net = invNet(snap);
+  // live extras
+  net += invExtra.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const ohp = (invOhpPct / 100) * net;
+  const g = id => document.getElementById(id);
+  if (g('pv-net')) g('pv-net').textContent = fmtMoney(net);
+  if (g('pv-total')) g('pv-total').textContent = fmtMoney(net + ohp);
+}
+
+// ==================================================================
+// LOCKING GUARDS — wrap the app's edit/delete functions
+// ==================================================================
+function invLockedToast(kind, id) {
+  const src = kind === 'time' ? timeEntries.find(t => t.id === id) : expenses.find(e => e.id === id);
+  if (!src || !src.invoice_id) return false;
+  toast('🔒 Locked — billed on invoice #' + invoiceNumberFor(src.invoice_id) + '. Delete that invoice to unlock.');
+  return true;
+}
+(function invInstallGuards() {
+  if (typeof deleteTime === 'function') {
+    const orig = window.deleteTime;
+    window.deleteTime = function (id) { if (invLockedToast('time', id)) return; return orig.call(this, id); };
+  }
+  if (typeof editExpense === 'function') {
+    const orig = window.editExpense;
+    window.editExpense = function (id) { if (invLockedToast('expense', id)) return; return orig.call(this, id); };
+  }
+  if (typeof editExpenseSwitchTab === 'function') {
+    const orig = window.editExpenseSwitchTab;
+    window.editExpenseSwitchTab = function (id) { if (invLockedToast('expense', id)) return; return orig.call(this, id); };
+  }
+  if (typeof deleteExpense === 'function') {
+    const orig = window.deleteExpense;
+    window.deleteExpense = function (id) { if (invLockedToast('expense', id)) return; return orig.call(this, id); };
+  }
+  if (typeof saveCellInternal === 'function') {
+    const orig = window.saveCellInternal;
+    window.saveCellInternal = function (input) {
+      const taskId = input.dataset.task, date = input.dataset.date;
+      const stamped = timeEntries.find(e => e.task_id === taskId && e.entry_date === date && e.invoice_id);
+      if (stamped) {
+        const cli = projectClientName(projectById(taskById(taskId) ? taskById(taskId).project_id : null));
+        toast('🔒 ' + cli.proj + ' hours on ' + date + ' are billed on invoice #' + invoiceNumberFor(stamped.invoice_id) + ' — delete that invoice to edit');
+        input.value = input.dataset.originalValue || '';
+        return;
+      }
+      return orig.call(this, input);
+    };
+  }
+  // gray out locked cells + lock badges after the weekly grid renders
+  if (typeof renderWeekGrid === 'function') {
+    const orig = window.renderWeekGrid;
+    window.renderWeekGrid = async function () {
+      await orig.call(this);
+      document.querySelectorAll('#time-body .cell-input').forEach(inp => {
+        const stamped = timeEntries.find(e => e.task_id === inp.dataset.task && e.entry_date === inp.dataset.date && e.invoice_id);
+        if (stamped) { inp.disabled = true; inp.style.opacity = .45; inp.title = 'Billed on invoice #' + invoiceNumberFor(stamped.invoice_id); }
+      });
+    };
+  }
+})();
+
+// ==================================================================
+// PDF — jsPDF + autotable lazy-loaded from jsdelivr on first use
+// ==================================================================
+function invLoadPdfLibs() {
+  if (pdfLibsLoading) return pdfLibsLoading;
+  pdfLibsLoading = new Promise((resolve, reject) => {
+    const s1 = document.createElement('script');
+    s1.src = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
+    s1.onload = () => {
+      const s2 = document.createElement('script');
+      s2.src = 'https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js';
+      s2.onload = resolve; s2.onerror = reject;
+      document.head.appendChild(s2);
+    };
+    s1.onerror = reject;
+    document.head.appendChild(s1);
+  });
+  return pdfLibsLoading;
+}
+
+async function invPdfButton(id, btn) {
+  const v = invoiceById(id); if (!v) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Building…'; }
+  try {
+    await invLoadPdfLibs();
+    const blob = invBuildPdf(v);
+    const fname = 'invoice-' + v.invoice_number + '.pdf';
+    const file = new File([blob], fname, { type: 'application/pdf' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: 'Invoice ' + v.invoice_number,
+          text: 'Invoice ' + v.invoice_number + ' from ' + INV_BUSINESS_NAME });
+        return;
+      } catch (err) { if (err.name === 'AbortError') return; /* fall through to download */ }
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = fname;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  } catch (err) {
+    toast('PDF library failed to load (VPN blocking CDN? Copy: ' + err.message + ')');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📄 PDF'; }
+  }
+}
+
+function invBuildPdf(v) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const cli = clientById(v.client_id);
+  const items = invItemsFor(v.id);
+  const net = invNet(items), ohp = invOhp(items);
+
+  // header
+  doc.setFontSize(18); doc.text(INV_BUSINESS_NAME, 14, 20);
+  doc.setFontSize(11); doc.text('Invoice #' + v.invoice_number, 14, 27);
+  doc.setFontSize(10);
+  doc.text('Issued: ' + invMdy(v.issue_date), 200, 20, { align: 'right' });
+  if (v.due_date) doc.text('Due: ' + invMdy(v.due_date), 200, 26, { align: 'right' });
+  if (v.status) doc.text('Status: ' + v.status, 200, 32, { align: 'right' });
+
+  // client block
+  doc.setFontSize(10);
+  doc.text('Billed to:', 14, 40);
+  doc.setFontSize(12); doc.text(cli ? cli.name : '', 14, 46);
+  doc.setFontSize(10);
+  if (cli && cli.address) doc.text(doc.splitTextToSize(cli.address, 80), 14, 51);
+
+  // table
+  const rows = invGroupRows(v, items).map(r => [
+    (r.label || '') + (r.sub ? '\n' + r.sub : '') + (r.notes ? '\n' + r.notes : ''),
+    r.qty != null ? String(Number(r.qty).toFixed(2).replace(/\.?0+$/, '')) + (r.unit ? ' ' + r.unit : '') : '',
+    r.rate != null ? fmtMoney(r.rate) : '',
+    fmtMoney(r.amount),
+  ]);
+
+  doc.autoTable({
+    startY: 62,
+    head: [['Item', 'Qty', 'Rate', 'Amount']],
+    body: rows,
+    theme: 'grid',
+    styles: { fontSize: 9, cellPadding: 2.5 },
+    columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' } },
+  });
+
+  // totals
+  let y = doc.lastAutoTable.finalY + 8;
+  const tx = 196;
+  doc.setFontSize(10);
+  doc.text('Net (costs less deposits):', tx - 60, y, { align: 'right' });
+  doc.text(fmtMoney(net), tx, y, { align: 'right' }); y += 6;
+  items.filter(i => i.is_percent).forEach(i => {
+    doc.text('Overhead & Profit (' + i.unit_price + '% of net):', tx - 60, y, { align: 'right' });
+    doc.text(fmtMoney((Number(i.unit_price||0)/100) * net), tx, y, { align: 'right' }); y += 6;
+  });
+  doc.setFontSize(12); doc.setFont(undefined, 'bold');
+  doc.text('Total:', tx - 60, y, { align: 'right' });
+  doc.text(fmtMoney(net + ohp), tx, y, { align: 'right' });
+  doc.setFont(undefined, 'normal'); doc.setFontSize(10); y += 10;
+
+  if (v.requested_amount != null) {
+    doc.setFontSize(13); doc.setFont(undefined, 'bold');
+    doc.text('Amount requested: ' + fmtMoney(v.requested_amount), tx, y, { align: 'right' });
+    doc.setFont(undefined, 'normal'); doc.setFontSize(10); y += 8;
+  }
+  if (v.notes) {
+    doc.setFontSize(9);
+    doc.text(doc.splitTextToSize(v.notes, 180), 14, y);
+    y += 14;
+  }
+
+  return doc.output('blob');
+}
+function invMdy(d) {
+  if (!d) return '';
+  const parts = String(d).split('-');
+  return parts[1] + '/' + parts[2] + '/' + parts[0];
+}
 </script>
 </body>
 </html>
