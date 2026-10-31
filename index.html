@@ -4026,6 +4026,64 @@ function invBuildPdf(v) {
 
   return doc.output('blob');
 }
+async function invPreviewButton(id, btn) {
+  const v = invoiceById(id); if (!v) return;
+  let lbl = null;
+  if (btn) { lbl = btn.textContent; btn.disabled = true; btn.textContent = 'Building…'; }
+  try {
+    await invLoadPdfLibs();
+    const blob = await invBuildPdfWithReceipts(v);
+    const url = URL.createObjectURL(blob);
+    const win = window.open(url, '_blank');
+    if (!win) { toast('Popup blocked? Try again — if this persists, tap the 📄 button once to allow popups'); }
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (err) {
+    toast('Preview failed: ' + (err && err.message ? err.message : err));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = lbl || '👁'; }
+  }
+}
+
+// Rewrites existing button rows at runtime to insert the new 👁 button
+(function () {
+  function insertPreviewButtons() {
+    // list view rows
+    document.querySelectorAll('#view-invoices .row-actions').forEach(span => {
+      const pdfBtn = span.querySelector('button[onclick^="invPdfButton"]');
+      if (pdfBtn && !span.querySelector('button[onclick^="invPreviewButton"]')) {
+        const eye = document.createElement('button');
+        eye.className = 'btn tiny secondary';
+        eye.textContent = '👁';
+        eye.title = 'Preview (opens PDF in viewer)';
+        eye.setAttribute('onclick', 'invPreviewButton("' + pdfBtn.getAttribute('onclick').match(/'([^']+)'\)/)[1] + '", this)');
+        span.insertBefore(eye, pdfBtn);
+      }
+    });
+    // editor header row
+    const hdr = document.querySelector('#view-invoices .view-title .row-actions');
+    if (hdr) {
+      const pdfBtn = hdr.querySelector('button[onclick^="invPdfButton"]');
+      if (pdfBtn && !hdr.querySelector('button[onclick^="invPreviewButton"]')) {
+        const eye = document.createElement('button');
+        eye.className = 'btn small secondary';
+        eye.textContent = '👁 Preview';
+        eye.title = 'Preview (opens PDF in viewer)';
+        eye.setAttribute('onclick', 'invPreviewButton("' + pdfBtn.getAttribute('onclick').match(/'([^']+)'\)/)[1] + '", this)');
+        hdr.insertBefore(eye, pdfBtn);
+      }
+    }
+  }
+  // Initial pass after each invoices render; a MutationObserver handles
+  // subsequent re-renders (open/close editor, save, pull, delete).
+  const renderOrig = window.renderInvoices;
+  if (typeof renderOrig === 'function') {
+    window.renderInvoices = function () {
+      renderOrig.apply(this, arguments);
+      insertPreviewButtons();
+    };
+  }
+  insertPreviewButtons();
+})();
 </script>
 </body>
 </html>
