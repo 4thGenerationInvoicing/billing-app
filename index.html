@@ -3650,6 +3650,183 @@ function invBuildPdf(v) {
 
   return doc.output('blob');
 }
+async function rcFetchReceiptImage(rec) {
+  const { data } = await db.storage.from('receipts').createSignedUrl(rec.storage_path, 3600);
+  if (!data || !data.signedUrl) throw new Error('no signed URL');
+  const resp = await fetch(data.signedUrl);
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  const blob = await resp.blob();
+  const durl = await new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result);
+    fr.onerror = () => rej(new Error('read failed'));
+    fr.readAsDataURL(blob);
+  });
+  const img = await new Promise((res, rej) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = () => rej(new Error('decode failed'));
+    im.src = durl;
+  });
+  const MAXPX = 1400;
+  const scale = Math.min(1, MAXPX / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round((img.naturalWidth || 1) * scale));
+  c.height = Math.max(1, Math.round((img.naturalHeight || 1) * scale));
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  try { return c.toDataURL('image/jpeg', 0.82); } catch (e) { return durl; }
+}
+
+// ---- build the invoice PDF, then append receipt pages to it ----
+async function invBuildPdfWithReceipts(v) {
+  // refresh receipt records so recently saved ones are included
+  receiptFiles = await fetchReceipts();
+
+  // expenses in INVOICE LINE order (position order of expense rows)
+  const cells = [];
+  invItemsFor(v.id).filter(i => i.source_type === 'expense').forEach(i => {
+    const e = expenses.find(x => x.id === i.source_entry_id);
+    if (!e) return;
+    const recs = receiptsFor(e.id).filter(r => isImageFile(r.filename) || isImageFile(r.storage_path));
+    if (!recs.length) return; // no photo receipt -> skip this expense entirely
+    recs.forEach((r, idx) => cells.push({ e, r, idx, count: recs.length }));
+  });
+
+  // nothing to attach -> identical behavior to before
+  if (!cells.length) return invBuildPdf(v);
+
+  // capture the jsPDF doc that invBuildPdf creates, via a constructor spy.
+  // (invBuildPdf returns a blob, but we need the live document to add pages.)
+  const { jsPDF: OrigCtor } = window.jspdf;
+  let captured = null;
+  function SpyCtor(opts) {
+    const inst = new OrigCtor(opts);
+    captured = inst;
+    return inst;
+  }
+  let blob;
+  try {
+    window.jspdf.jsPDF = SpyCtor;
+    blob = invBuildPdf(v);
+  } finally {
+    window.jspdf.jsPDF = OrigCtor;
+  }
+  const doc = captured;
+  if (!doc) return blob;
+
+  toast('Attaching ' + cells.length + ' receipt' + (cells.length === 1 ? '' : 's') + '…');
+
+  // preload ALL images up front; a failed load becomes a caption-only cell
+  await Promise.all(cells.map(async cell => {
+    try { cell.img = await rcFetchReceiptImage(cell.r); }
+    catch (err) { cell.img = null; }
+  }));
+
+  const F = 'times';
+  const MX = 14, RX = 196;         // page margins (matches invoice pages)
+  const COLS = 3, GAP = 6;         // density knobs: COLS across
+  const cellW = (RX - MX - (COLS - 1) * GAP) / COLS;
+  const BOX_H = 70;                // image box height knob
+  const CAP_H = 14, CELL_H = BOX_H + CAP_H;
+  const BOT = 280;                 // stop above the footer zone
+
+  let col = 0, yTop = 0, first = true;
+  const startPage = () => {
+    doc.addPage();
+    if (first) {
+      doc.setFont(F, 'bold'); doc.setFontSize(12);
+      doc.text('Expense Receipts', MX, 18);
+      doc.setFont(F, 'normal'); doc.setFontSize(9); doc.setTextColor(110);
+      doc.text(cells.length + ' attached', RX, 18, { align: 'right' });
+      doc.setTextColor(0, 0, 0);
+      yTop = 26;
+    } else {
+      yTop = 20;
+    }
+    first = false;
+    col = 0;
+  };
+  startPage();
+
+  cells.forEach(cell => {
+    if (col >= COLS) {
+      col = 0;
+      yTop += CELL_H;
+      if (yTop + CELL_H > BOT) startPage();
+    }
+    const x = MX + col * (cellW + GAP);
+
+    // light frame around the image area
+    doc.setDrawColor(170); doc.setLineWidth(0.2);
+    doc.rect(x, yTop, cellW, BOX_H);
+
+    if (cell.img) {
+      const props = doc.getImageProperties(cell.img);
+      let w = cellW, h = w * props.height / props.width;
+      if (h > BOX_H) { h = BOX_H; w = h * props.width / props.height; }
+      const fmtMatch = /^data:image\/(\w+)/.exec(cell.img);
+      doc.addImage(cell.img, fmtMatch ? fmtMatch[1].toUpperCase() : 'JPEG',
+                   x + (cellW - w) / 2, yTop + (BOX_H - h) / 2, w, h);
+    } else {
+      doc.setFont(F, 'italic'); doc.setFontSize(8); doc.setTextColor(140);
+      doc.text('(image unavailable)', x + cellW / 2, yTop + BOX_H / 2, { align: 'center' });
+      doc.setTextColor(0, 0, 0);
+    }
+
+    // caption: vendor (bold), then date · amount · category
+    let cy = yTop + BOX_H + 3.5;
+    doc.setFont(F, 'bold'); doc.setFontSize(8);
+    const cap1 = (cell.e.vendor || 'Expense') + (cell.count > 1 ? '  [' + (cell.idx + 1) + '/' + cell.count + ']' : '');
+    const l1 = doc.splitTextToSize(cap1, cellW).slice(0, 2);
+    doc.text(l1, x, cy);
+    cy += 3.5 * l1.length;
+    doc.setFont(F, 'normal');
+    const cap2 = invMdy(cell.e.expense_date) + ' · ' + invMoney(cell.e.amount) + ' · ' + (cell.e.category || '');
+    doc.text(doc.splitTextToSize(cap2, cellW).slice(0, 1), x, cy);
+    col++;
+  });
+
+  // rewrite footers so page counts include the receipt pages
+  const pages = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setFillColor(255, 255, 255);
+    doc.rect(140, 284, 66, 10, 'F'); // white-out the old footer first
+    doc.setFont(F, 'normal'); doc.setFontSize(8); doc.setTextColor(130);
+    doc.text('Page ' + i + ' of ' + pages, RX, 290, { align: 'right' });
+  }
+  doc.setTextColor(0, 0, 0);
+
+  return doc.output('blob');
+}
+
+// ---- OVERRIDE invPdfButton: same share/open behavior, async builder ----
+async function invPdfButton(id, btn) {
+  const v = invoiceById(id); if (!v) return;
+  let lbl = null;
+  if (btn) { lbl = btn.textContent; btn.disabled = true; btn.textContent = 'Building…'; }
+  try {
+    await invLoadPdfLibs();
+    const blob = await invBuildPdfWithReceipts(v);
+    const fname = 'invoice-' + v.invoice_number + '.pdf';
+    const file = new File([blob], fname, { type: 'application/pdf' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: 'Invoice ' + v.invoice_number,
+          text: 'Invoice ' + v.invoice_number + ' from ' + INV_BUSINESS_NAME });
+        return;
+      } catch (err) { if (err.name === 'AbortError') return; }
+    }
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  } catch (err) {
+    toast('PDF failed: ' + (err && err.message ? err.message : err));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = lbl || '📄 PDF'; }
+  }
+}
+
 </script>
 </body>
 </html>
