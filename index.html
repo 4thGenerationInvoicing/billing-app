@@ -2420,6 +2420,383 @@ function invMdy(d) {
   if (!d) return '';
   const parts = String(d).split('-');
   return parts[1] + '/' + parts[2] + '/' + parts[0];
-}</script>
+}
+(function () {
+  const st = document.createElement('style');
+  st.textContent = `
+    /* ---- royal blue base ---- */
+    :root { --p:#3B5FE3; --p-soft:#e8edfc; }
+    .est-status.draft, .inv-status.draft { background:#e8edfc; color:#3B5FE3; }
+    .exp-cat { background:#e8edfc; color:#3B5FE3; }
+    .exp-cat.other { background:#e8edfc; color:#3B5FE3; }
+    .staged-doc { background:#e8edfc; color:var(--p); }
+    .draft-restored { color:var(--p); background:#e8edfc; }
+    .cell-input.filled { background:#e8edfc; }
+    table.wgrid th { background:#f7f8fe; }
+    table.wgrid td.rowhead { background:#f7f8fe; }
+    table.wgrid td.total, table.wgrid th.total { background:#f7f8fe; }
+    .today-col { background:#f8faff; }
+    #es-newcli { background:#f7f9ff; border-color:var(--p); }
+    .week-header-row { background:#f7f8fe; }
+
+    /* ---- nav tabs: bolder with dividers ---- */
+    nav { background:var(--card); border-bottom:1px solid var(--border); }
+    nav button { color:#3a3b52; font-weight:600; font-size:15px; padding:14px 18px; border-bottom:3px solid transparent; }
+    nav button + button { border-left:1px solid var(--border); }
+    nav button.active { color:var(--p); border-bottom-color:var(--p); font-weight:700; }
+
+    /* ---- dark mode ---- */
+    body.dark { --bg:#12141c; --card:#1b1e29; --text:#e9ebf5; --muted:#98a0b8; --border:#2b3042; --p:#7d93f5; --danger:#e06a6a; --good:#3fbe7e; }
+    body.dark input, body.dark select, body.dark textarea { background:#232736; color:var(--text); border-color:var(--border); }
+    body.dark .btn.secondary { background:var(--card); color:var(--p); }
+    body.dark .btn { background:var(--p); }
+    body.dark #login-screen { background:#1b1e29; }
+    body.dark header { background:#2a4bbd; }
+    body.dark table.wgrid th, body.dark table.wgrid td.rowhead,
+    body.dark table.wgrid td.total, body.dark table.wgrid th.total,
+    body.dark .week-header-row { background:#20242f; }
+    body.dark .today-col { background:#1f2534; }
+    body.dark .cell-input { color:var(--text); }
+    body.dark .cell-input:focus { background:#232736; }
+    body.dark .cell-input.filled { background:#2b3150; }
+    body.dark .est-status.draft, body.dark .inv-status.draft { background:rgba(125,147,245,.16); color:#9fb0fa; }
+    body.dark .est-status.sent, body.dark .inv-status.sent { background:rgba(80,160,240,.16); color:#8cc4f5; }
+    body.dark .est-status.accepted, body.dark .inv-status.accepted,
+    body.dark .exp-cat.deposit { background:rgba(63,190,126,.15); color:#5fd39a; }
+    body.dark .est-status.declined { background:rgba(224,106,106,.15); color:#ef9a9a; }
+    body.dark .est-status.expired, body.dark .inv-status.void { background:rgba(152,160,184,.15); color:#b4bcd2; }
+    body.dark .exp-cat { background:rgba(125,147,245,.16); color:#9fb0fa; }
+    body.dark .exp-cat.materials { background:rgba(80,160,240,.16); color:#8cc4f5; }
+    body.dark .exp-cat.subcontractor { background:rgba(214,170,60,.14); color:#e3c26a; }
+    body.dark .exp-cat.other { background:rgba(125,147,245,.16); color:#9fb0fa; }
+    body.dark .draft-restored { background:rgba(125,147,245,.14); color:#9fb0fa; }
+    body.dark #es-newcli { background:#1f2436; }
+    body.dark .close-btn:hover { background:#3a2430; }
+    #theme-toggle { background:rgba(255,255,255,.15); border:none; color:#fff; padding:7px 12px; border-radius:8px; cursor:pointer; font-size:14px; margin-right:8px; }
+    body.dark .est-desc textarea, body.dark .est-lines input, body.dark .est-lines select { background:#232736; color:var(--text); }
+  `;
+  document.head.appendChild(st);
+
+  // theme toggle button, injected next to Log out
+  const applySaved = () => {
+    try { if (localStorage.getItem('theme-dark') === '1') document.body.classList.add('dark'); } catch (e) {}
+  };
+  applySaved();
+  const mkBtn = () => {
+    const b = document.createElement('button');
+    b.id = 'theme-toggle';
+    b.textContent = document.body.classList.contains('dark') ? '☀' : '🌙';
+    b.onclick = () => {
+      const dark = document.body.classList.toggle('dark');
+      try { localStorage.setItem('theme-dark', dark ? '1' : '0'); } catch (e) {}
+      b.textContent = dark ? '☀' : '🌙';
+    };
+    return b;
+  };
+  const insertBtn = () => {
+    const hdr = document.querySelector('#app header');
+    if (hdr && !document.getElementById('theme-toggle')) {
+      const logout = document.getElementById('logout-btn');
+      hdr.insertBefore(mkBtn(), logout);
+    }
+  };
+  insertBtn();
+  // also catch re-renders of the app shell
+  new MutationObserver(insertBtn).observe(document.body, { childList: true, subtree: true });
+})();
+
+// ------------------------------------------------------------------
+// PART B — business identity (used by the PDF)
+// ------------------------------------------------------------------
+const INV_FROM_NAME = '4th Generation Builders';
+const INV_FROM_LINES = ['12 Summer Street', 'Danvers, Mass 01923'];
+const INV_FROM_CREDS = 'CSL-083816  HIC-160924';
+
+// ------------------------------------------------------------------
+// PART C — row formatting (overrides: date ranges, Service/Product)
+// ------------------------------------------------------------------
+function invSrcDate(itemId, kind) {
+  if (kind === 'time') { const t = timeEntries.find(x => x.id === itemId); return t ? t.entry_date : null; }
+  const e = expenses.find(x => x.id === itemId); return e ? e.expense_date : null;
+}
+function invDateRange(rows) {
+  const ds = rows.map(i => invSrcDate(i.source_entry_id, 'time')).filter(Boolean).sort();
+  if (!ds.length) return '';
+  return '(' + invMdy(ds[0]) + ' - ' + invMdy(ds[ds.length - 1]) + ')';
+}
+
+// OVERRIDE of invPullUnbilled: notes no longer carry the date (date now
+// lives in the description, Harvest-style). Everything else identical.
+async function invPullUnbilled(invId) {
+  const v = invoiceById(invId);
+  if (!v || !v.project_id) return 0;
+  const pid = v.project_id;
+  const unbT = invUnbilledTime(pid), unbE = invUnbilledExpenses(pid);
+  if (!unbT.length && !unbE.length) { toast('Already up to date'); return 0; }
+
+  const existing = invItemsFor(invId);
+  let pos = existing.reduce((m, i) => Math.max(m, i.position || 0), -1) + 1;
+
+  const rows = [];
+  unbT.forEach(t => {
+    const task = t.task_id ? taskById(t.task_id) : null;
+    const rate = effectiveRate(t) || 0;
+    rows.push({
+      invoice_id: invId, position: pos++, source_type: 'time', source_entry_id: t.id,
+      description: task ? task.name : 'Labor', item_type: 'Labor',
+      item_notes: t.notes || '',
+      quantity: Number((t.minutes / 60).toFixed(4)), unit: 'hr', unit_price: rate, is_percent: false,
+    });
+  });
+  unbE.forEach(e => {
+    rows.push({
+      invoice_id: invId, position: pos++, source_type: 'expense', source_entry_id: e.id,
+      description: e.vendor || (e.category === 'Deposit' ? 'Deposit' : (e.category || 'Expense')),
+      item_type: e.category || 'Other',
+      item_notes: e.notes || '',
+      quantity: 1, unit: null, unit_price: Number(e.amount), is_percent: false,
+    });
+  });
+
+  const { error: insErr } = await db.from('invoice_items').insert(rows);
+  if (insErr) { toast(insErr.message); return 0; }
+
+  const tIds = unbT.map(t => t.id), eIds = unbE.map(e => e.id);
+  if (tIds.length) await db.from('time_entries').update({ invoice_id: invId }).in('id', tIds);
+  if (eIds.length) await db.from('expenses').update({ invoice_id: invId }).in('id', eIds);
+
+  invoiceItems = await fetchInvoiceItems();
+  timeEntries = await fetchTime();
+  expenses = await fetchExpenses();
+  return rows.length;
+}
+
+// OVERRIDE of invGroupRows: rows shaped for the 5-column Harvest layout
+function invGroupRows(v, items) {
+  const time = items.filter(i => i.source_type === 'time');
+  const exp  = items.filter(i => i.source_type === 'expense' && !invIsDeposit(i));
+  const deps = items.filter(i => !i.is_percent && invIsDeposit(i));
+  const adj  = items.filter(invIsManual).filter(i => !i.is_percent);
+  const g = v.grouping || 'by_task';
+
+  const expRow = i => {
+    const d = invSrcDate(i.source_entry_id, 'expense');
+    const desc = (d ? invMdy(d) + ' - ' : '') + (i.description || '');
+    return { type: 'Product', desc: desc + (i.item_notes ? '\n' + i.item_notes : ''), qty: 1, price: Number(i.unit_price), amount: invItemAmount(i) };
+  };
+  const depRow = i => {
+    const d = invSrcDate(i.source_entry_id, 'expense');
+    return { type: 'Product', desc: (d ? invMdy(d) + ' - ' : '') + 'Deposit', qty: 1, price: Number(i.unit_price), amount: invItemAmount(i) };
+  };
+  const depSum = deps.length ? { type: 'Product', desc: 'Deposits received (' + deps.length + ' draw' + (deps.length===1?'':'s') + ')', qty: 1,
+    price: deps.reduce((s,i)=>s+invItemAmount(i),0), amount: deps.reduce((s,i)=>s+invItemAmount(i),0) } : null;
+
+  if (g === 'detail') {
+    return [
+      ...time.map(i => ({ type: 'Service', desc: i.description + (invDateRange([i]) ? ' ' + invDateRange([i]) : '') + (i.item_notes ? '\n' + i.item_notes : ''), qty: i.quantity, price: i.unit_price, amount: invItemAmount(i) })),
+      ...exp.map(expRow),
+      ...deps.map(depRow),
+      ...adj.map(i => ({ type: '', desc: i.description || 'Adjustment', qty: 1, price: Number(i.unit_price), amount: invItemAmount(i) })),
+    ];
+  }
+  if (g === 'by_task') {
+    const byKey = {};
+    const groupRows = {};
+    time.forEach(i => {
+      const k = i.description + '|' + i.unit_price;
+      (byKey[k] = byKey[k] || { qty: 0, amount: 0, rows: [] });
+      byKey[k].qty += Number(i.quantity || 0);
+      byKey[k].amount += invItemAmount(i);
+      byKey[k].rows.push(i);
+    });
+    const labor = Object.values(byKey).map(grp => {
+      const first = grp.rows[0];
+      const rng = invDateRange(grp.rows);
+      return { type: 'Service', desc: first.description + (rng ? '\n' + rng : '') + (first.item_notes ? '\n' + first.item_notes : ''), qty: grp.qty, price: first.unit_price, amount: grp.amount };
+    });
+    return [
+      ...labor,
+      ...exp.map(expRow),           // expenses stay DETAILED
+      ...(depSum ? [depSum] : []),
+      ...adj.map(i => ({ type: '', desc: i.description || 'Adjustment', qty: 1, price: Number(i.unit_price), amount: invItemAmount(i) })),
+    ];
+  }
+  // by_category — labor one line, expenses rolled by category
+  const rows = [];
+  if (time.length) rows.push({ type: 'Service', desc: 'Labor' + (invDateRange(time) ? '\n' + invDateRange(time) : ''), qty: time.reduce((s,i)=>s+Number(i.quantity||0),0),
+    price: time.every(i => Number(i.unit_price) === Number(time[0].unit_price)) ? time[0].unit_price : null,
+    amount: time.reduce((s,i)=>s+invItemAmount(i),0) });
+  const catExp = {};
+  exp.forEach(i => { (catExp[i.item_type] = catExp[i.item_type] || { amount: 0 }).amount += invItemAmount(i); });
+  Object.keys(catExp).forEach(k => rows.push({ type: 'Product', desc: k, qty: 1, price: catExp[k].amount, amount: catExp[k].amount }));
+  if (depSum) rows.push(depSum);
+  adj.forEach(i => rows.push({ type: '', desc: i.description || 'Adjustment', qty: 1, price: Number(i.unit_price), amount: invItemAmount(i) }));
+  return rows;
+}
+
+// OVERRIDE of invPreviewTable: 5 columns matching the PDF
+function invPreviewTable(v, items) {
+  const rows = invGroupRows(v, items);
+  const sub = invSubtotal(items), ohp = invOhp(items), tot = invTotal(items), bal = invBalance(items), dep = invDeposits(items);
+  const pctSum = invOhpPctSum(items);
+
+  const trs = rows.map(r => `<tr>
+    <td style="white-space:nowrap">${esc(r.type || '')}</td>
+    <td style="white-space:pre-line">${esc(r.desc || '')}</td>
+    <td style="text-align:right;white-space:nowrap">${r.qty != null ? esc(Number(r.qty).toFixed(2).replace(/\.?0+$/,'')) : '—'}</td>
+    <td style="text-align:right;white-space:nowrap">${r.price != null ? fmtMoney(r.price) : '—'}</td>
+    <td class="${Number(r.amount) < 0 ? 'inv-amt-neg' : 'inv-amt-pos'}" style="text-align:right;white-space:nowrap">${fmtMoney(r.amount)}</td>
+  </tr>`).join('');
+
+  const ohpRow = pctSum ? `<tr>
+    <td style="white-space:nowrap"></td>
+    <td>Overhead &amp; Profit</td>
+    <td style="text-align:right">${pctSum}%</td>
+    <td style="text-align:right">${fmtMoney(sub)}</td>
+    <td style="text-align:right;font-weight:600">${fmtMoney(ohp)}</td>
+  </tr>` : '';
+
+  return `
+  <table class="est-lines">
+    <thead><tr><th>Item Type</th><th>Description</th><th style="text-align:right">Quantity</th><th style="text-align:right">Unit Price</th><th style="text-align:right">Amount</th></tr></thead>
+    <tbody>${trs || '<tr><td colspan="5" class="empty">No line items</td></tr>'}
+    ${ohpRow}
+    </tbody>
+  </table>
+  <table class="est-totals" style="width:auto;margin-left:auto">
+    <tr><td style="text-align:right;color:var(--muted)">Total</td><td style="text-align:right;font-weight:700;min-width:120px" id="pv-total">${fmtMoney(tot)}</td></tr>
+    ${dep ? `<tr><td style="text-align:right;color:var(--muted)">Less deposits received</td><td class="inv-amt-neg" style="text-align:right;font-weight:600" id="pv-dep">${fmtMoney(dep)}</td></tr>` : ''}
+    <tr><td style="text-align:right;color:var(--muted);font-size:16px"><strong>Balance</strong></td><td class="${bal < 0 ? 'inv-amt-neg' : ''}" style="text-align:right;font-size:16px;font-weight:700" id="pv-bal">${fmtMoney(bal)}</td></tr>
+    ${v.requested_amount != null ? `<tr><td style="text-align:right;color:var(--p)"><strong>Amount requested</strong></td><td style="text-align:right;color:var(--p);font-weight:700">${fmtMoney(v.requested_amount)}</td></tr>` : ''}
+  </table>
+  ${v.notes ? `<div style="font-size:12px;color:var(--muted);margin-top:8px;white-space:pre-wrap">${esc(v.notes)}</div>` : ''}`;
+}
+// keep live totals working with the new preview shape
+function invRefreshPreviewTotals() {
+  const model = invPreviewModel(); if (!model) return;
+  const { items, v } = model;
+  const g = id => document.getElementById(id);
+  if (!g('pv-total')) return;
+  const sub = invSubtotal(items), ohp = invOhp(items), dep = invDeposits(items), bal = invBalance(items);
+  g('pv-total').textContent = fmtMoney(sub + ohp);
+  if (g('pv-dep')) g('pv-dep').textContent = fmtMoney(dep);
+  g('pv-bal').textContent = fmtMoney(bal);
+  g('pv-bal').className = bal < 0 ? 'inv-amt-neg' : '';
+}
+
+// ------------------------------------------------------------------
+// PART D — invoice PDF (Harvest layout, From/Invoice swapped)
+// ------------------------------------------------------------------
+function invBuildPdf(v) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const cli = clientById(v.client_id);
+  const items = invItemsFor(v.id);
+  const sub = invSubtotal(items), ohp = invOhp(items), dep = invDeposits(items);
+  const bal = invBalance(items), pctSum = invOhpPctSum(items);
+
+  // ---- upper LEFT: 4G logo + business block below ----
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(30);
+  doc.setTextColor(59, 95, 227);
+  doc.text('4G', 14, 22);
+  doc.setTextColor(0, 0, 0);
+  doc.setFontSize(11);
+  doc.text(INV_FROM_NAME, 14, 32);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+  let by = 37;
+  INV_FROM_LINES.forEach(line => { doc.text(line, 14, by); by += 4.5; });
+  doc.text(INV_FROM_CREDS, 14, by);
+
+  // ---- RIGHT: invoice number + dates on top, client below ----
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(14);
+  doc.text('Invoice ' + v.invoice_number, 196, 20, { align: 'right' });
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  doc.text('Issue Date: ' + invMdy(v.issue_date), 196, 27, { align: 'right' });
+  doc.text('Due Date: ' + (v.due_date ? invMdy(v.due_date) : invMdy(v.issue_date) + ' (upon receipt)'), 196, 33, { align: 'right' });
+
+  // client block on the right, roughly opposite the business address
+  let cy = 32;
+  if (cli) {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
+    doc.text('Invoice For', 130, cy); cy += 6;
+    doc.text(cli.name || '', 130, cy); cy += 5;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+    if (cli.address) doc.text(doc.splitTextToSize(cli.address, 66), 130, cy);
+  }
+
+  // ---- line item table ----
+  const rows = invGroupRows(v, items).map(r => [
+    r.type || '',
+    r.desc || '',
+    r.qty != null ? String(Number(r.qty).toFixed(2).replace(/\.?0+$/, '')) : '',
+    r.price != null ? fmtMoney(r.price) : '',
+    fmtMoney(r.amount),
+  ]);
+  if (pctSum) {
+    rows.push(['', 'Overhead & Profit', String(pctSum) + '%', fmtMoney(sub), fmtMoney(ohp)]);
+  }
+
+  doc.autoTable({
+    startY: 56,
+    head: [['Item Type', 'Description', 'Quantity', 'Unit Price', 'Amount']],
+    body: rows,
+    theme: 'grid',
+    styles: { fontSize: 9, cellPadding: 2.5, valign: 'top' },
+    columnStyles: {
+      0: { cellWidth: 24 },
+      1: { cellWidth: 'auto' },
+      2: { cellWidth: 18, halign: 'right' },
+      3: { cellWidth: 24, halign: 'right' },
+      4: { cellWidth: 26, halign: 'right' },
+    },
+    didParseCell: data => {
+      // green for deposit/negative amounts (column 4)
+      if (data.section === 'body' && data.column.index === 4) {
+        const txt = String(data.cell.raw || '');
+        if (txt.indexOf('-') !== -1)  {
+          data.cell.styles.textColor = [46, 158, 91];
+        }
+      }
+    },
+  });
+
+  // ---- bottom block ----
+  let y = doc.lastAutoTable.finalY + 8;
+  const tx = 196;
+  doc.setFontSize(10);
+  if (dep) {
+    doc.text('Less deposits received:', tx - 62, y, { align: 'right' });
+    doc.text(fmtMoney(dep), tx, y, { align: 'right' }); y += 7;
+  }
+  doc.setFontSize(13); doc.setFont('helvetica', 'bold');
+  doc.text('Balance:', tx - 62, y, { align: 'right' });
+  if (bal < 0) doc.setTextColor(46, 158, 91);
+  doc.text(fmtMoney(bal), tx, y, { align: 'right' });
+  doc.setTextColor(0, 0, 0);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); y += 10;
+
+  if (v.requested_amount != null) {
+    doc.setFontSize(13); doc.setFont('helvetica', 'bold');
+    doc.setTextColor(59, 95, 227);
+    doc.text('Amount requested: ' + fmtMoney(v.requested_amount), tx, y, { align: 'right' });
+    doc.setTextColor(0, 0, 0);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); y += 8;
+  }
+  if (v.notes) {
+    doc.setFontSize(9);
+    doc.text(doc.splitTextToSize(v.notes, 180), 14, y);
+  }
+
+  // ---- page footers ----
+  const pages = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8); doc.setTextColor(130);
+    doc.text('Page ' + i + ' of ' + pages, 196, 290, { align: 'right' });
+  }
+
+  return doc.output('blob');
+}
+</script>
 </body>
 </html>
