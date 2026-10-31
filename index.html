@@ -3137,6 +3137,185 @@ function invBuildPdf(v) {
 
   return doc.output('blob');
 }
+(function () {
+  async function attempt() {
+    if (INV_LOGO_DATAURL) return true;
+    try {
+      const resp = await fetch('logo.png', { cache: 'no-store' });
+      if (!resp.ok) return false;
+      const blob = await resp.blob();
+      const durl = await new Promise((res, rej) => {
+        const fr = new FileReader();
+        fr.onload = () => res(fr.result);
+        fr.onerror = rej;
+        fr.readAsDataURL(blob);
+      });
+      // downscale via canvas so a huge PNG doesn't bloat the PDF
+      const img = await new Promise((res, rej) => {
+        const im = new Image();
+        im.onload = () => res(im);
+        im.onerror = rej;
+        im.src = durl;
+      });
+      const MAXW = 600;
+      const scale = Math.min(1, MAXW / img.naturalWidth);
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.naturalWidth * scale);
+      c.height = Math.round(img.naturalHeight * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      INV_LOGO_DATAURL = c.toDataURL('image/png');
+      return true;
+    } catch (e) { return false; }
+  }
+  // retry at 0s, 3s, 8s, 15s, 30s — survives the GitHub Pages deploy window
+  [0, 3000, 8000, 15000, 30000].forEach(ms => setTimeout(attempt, ms));
+})();
+
+// ---------- invoice PDF builder (aligned colons, matched blocks) ----------
+function invBuildPdf(v) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const cli = clientById(v.client_id);
+  const items = invItemsFor(v.id);
+  const sub = invSubtotal(items), ohp = invOhp(items), dep = invDeposits(items);
+  const bal = invBalance(items), pctSum = invOhpPctSum(items);
+  const F = 'times';
+
+  // ---- LEFT: logo (or 4G text fallback) + business block ----
+  let nameY;
+  if (INV_LOGO_DATAURL) {
+    const props = doc.getImageProperties(INV_LOGO_DATAURL);
+    const lw = 38, lh = lw * props.height / props.width;
+    doc.addImage(INV_LOGO_DATAURL, 'PNG', 14, 12, lw, lh);
+    nameY = 12 + lh + 10;
+  } else {
+    doc.setFont(F, 'bold'); doc.setFontSize(32);
+    doc.setTextColor(59, 95, 227);
+    doc.text('4G', 14, 28);
+    nameY = 41;
+  }
+  doc.setTextColor(0, 0, 0);
+  doc.setFont(F, 'bold'); doc.setFontSize(13);
+  doc.text(INV_FROM_NAME, 14, nameY);
+  doc.setFont(F, 'normal'); doc.setFontSize(10);
+  let by = nameY + 8;
+  INV_FROM_LINES.forEach(line => { doc.text(line, 14, by); by += 6; });
+  doc.text(INV_FROM_CREDS, 14, by);
+  by += 4;
+  const leftBottom = by;
+
+  // ---- RIGHT: invoice number + dates ----
+  doc.setFont(F, 'bold'); doc.setFontSize(16);
+  doc.text('Invoice ' + v.invoice_number, 196, 24, { align: 'right' });
+  doc.setFont(F, 'normal'); doc.setFontSize(11);
+  doc.text('Issue Date: ' + invMdy(v.issue_date), 196, 32, { align: 'right' });
+  doc.text('Due Date: ' + (v.due_date ? invMdy(v.due_date) : invMdy(v.issue_date) + ' (upon receipt)'), 196, 38, { align: 'right' });
+
+  // ---- RIGHT: client block, sized to match the company block ----
+  let rightBottom = 44;
+  if (cli) {
+    doc.setFont(F, 'normal'); doc.setFontSize(10);
+    doc.text('Invoice for:', 196, nameY, { align: 'right' });
+    doc.setFont(F, 'bold'); doc.setFontSize(13);
+    doc.text(cli.name || '', 196, nameY + 8, { align: 'right' });
+    let cy = nameY + 16;
+    doc.setFont(F, 'normal'); doc.setFontSize(10);
+    if (cli.address) {
+      doc.splitTextToSize(cli.address, 70).forEach(line => {
+        doc.text(line, 196, cy, { align: 'right' }); cy += 6;
+      });
+    }
+    rightBottom = cy;
+  }
+
+  // ---- line item table ----
+  const rows = invGroupRows(v, items).map(r => [
+    r.type || '',
+    r.desc || '',
+    r.qty != null ? String(Number(r.qty).toFixed(2).replace(/\.?0+$/, '')) : '',
+    r.price != null ? invMoney(r.price) : '',
+    invMoney(r.amount),
+  ]);
+  if (pctSum) {
+    rows.push(['', 'Overhead & Profit', String(pctSum) + '%', invMoney(sub), invMoney(ohp)]);
+  }
+
+  const startY = Math.max(leftBottom, rightBottom) + 12;
+  doc.autoTable({
+    startY: startY,
+    head: [['Item Type', 'Description', 'Quantity', 'Unit Price', 'Amount']],
+    body: rows,
+    theme: 'grid',
+    styles: { fontSize: 10, cellPadding: 3, valign: 'top', font: F,
+              lineColor: [70, 75, 95], lineWidth: 0.3 },
+    headStyles: { fillColor: [59, 95, 227], textColor: [255, 255, 255],
+                  font: F, fontStyle: 'bold', lineWidth: 0.3, lineColor: [70, 75, 95] },
+    alternateRowStyles: { fillColor: [244, 246, 250] },
+    columnStyles: {
+      0: { cellWidth: 26 },
+      1: { cellWidth: 'auto' },
+      2: { cellWidth: 20, halign: 'right' },
+      3: { cellWidth: 26, halign: 'right' },
+      4: { cellWidth: 28, halign: 'right' },
+    },
+    didParseCell: data => {
+      if (data.section === 'body' && data.column.index === 4) {
+        const txt = String(data.cell.raw || '');
+        if (txt.indexOf('-') !== -1) data.cell.styles.textColor = [46, 158, 91];
+      }
+    },
+  });
+
+  // ---- bottom block: colons aligned on one vertical line ----
+  let y = doc.lastAutoTable.finalY + 12;
+  const tx = 196;
+
+  // gather the totals lines so all colons share one column
+  const lines = [];
+  if (dep) lines.push({ label: 'Less deposits received:', money: invMoney(dep), size: 11, bold: false, color: null });
+  lines.push({ label: 'Balance:', money: invMoney(bal), size: 14, bold: true,
+               color: bal < 0 ? [46, 158, 91] : null });
+  if (v.requested_amount != null) {
+    lines.push({ label: 'Amount requested:', money: invMoney(v.requested_amount), size: 14, bold: true,
+                 color: [59, 95, 227] });
+  }
+
+  // colon column = widest number + 8pt gap; labels right-align to it
+  doc.setFont(F, 'normal'); doc.setFontSize(11);
+  let maxNumW = 0;
+  lines.forEach(L => {
+    doc.setFontSize(L.size);
+    maxNumW = Math.max(maxNumW, doc.getTextWidth(L.money));
+  });
+  const colonX = tx - maxNumW - 8;
+
+  lines.forEach(L => {
+    doc.setFont(F, L.bold ? 'bold' : 'normal'); doc.setFontSize(L.size);
+    doc.setTextColor(0, 0, 0);
+    doc.text(L.label, colonX, y, { align: 'right' });
+    if (L.color) doc.setTextColor(L.color[0], L.color[1], L.color[2]);
+    doc.text(L.money, tx, y, { align: 'right' });
+    doc.setTextColor(0, 0, 0);
+    y += L.size >= 14 ? 10 : 8;
+  });
+
+  doc.setFont(F, 'normal'); doc.setFontSize(10); y += 2;
+  if (v.notes) {
+    doc.setFontSize(10);
+    doc.text(doc.splitTextToSize(v.notes, 180), 14, y);
+  }
+
+  // ---- page footers ----
+  const pages = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setFont(F, 'normal'); doc.setFontSize(8); doc.setTextColor(130);
+    doc.text('Page ' + i + ' of ' + pages, 196, 290, { align: 'right' });
+  }
+  doc.setTextColor(0, 0, 0);
+
+  return doc.output('blob');
+}
 </script>
 </body>
 </html>
