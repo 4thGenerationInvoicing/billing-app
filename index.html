@@ -2797,6 +2797,99 @@ function invBuildPdf(v) {
 
   return doc.output('blob');
 }
+function invBlobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = reject;
+    fr.readAsDataURL(blob);
+  });
+}
+
+// ---- helper: footers on every page ----
+function invApplyFooters(doc) {
+  const pages = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setFont('times', 'normal'); doc.setFontSize(8); doc.setTextColor(130);
+    doc.text('Page ' + i + ' of ' + pages, 196, 290, { align: 'right' });
+  }
+  doc.setTextColor(0, 0, 0);
+}
+
+// ---- receipt pages ----
+async function invAttachReceipts(doc, v) {
+  const snapExpenses = invItemsFor(v.id).filter(i => i.source_type === 'expense');
+  let attached = 0, skipped = 0;
+
+  for (const it of snapExpenses) {
+    const exp = expenses.find(e => e.id === it.source_entry_id);
+    if (!exp) continue;
+    const files = (typeof receiptFiles !== 'undefined' ? receiptFiles : [])
+      .filter(f => f.expense_id === exp.id);
+    if (!files.length) continue;
+
+    for (const f of files) {
+      let dataUrl = null;
+      const isPdf = /\.pdf$/i.test(f.filename || '') || (f.mime || '').includes('pdf');
+      try {
+        if (!isPdf) {
+          const { data, error } = await db.storage.from('receipts').createSignedUrl(f.storage_path, 3600);
+          if (error || !data || !data.signedUrl) { skipped++; continue; }
+          const resp = await fetch(data.signedUrl);
+          if (!resp.ok) { skipped++; continue; }
+          dataUrl = await invBlobToDataUrl(await resp.blob());
+        }
+      } catch (e) { skipped++; continue; }
+
+      doc.addPage();
+      // caption
+      doc.setFont('times', 'bold'); doc.setFontSize(14); doc.setTextColor(0, 0, 0);
+      doc.text('Receipt — ' + (exp.vendor || exp.category || 'Expense'), 14, 20);
+      doc.setFont('times', 'normal'); doc.setFontSize(10);
+      doc.text('Date: ' + invMdy(exp.expense_date) + '   Amount: ' + fmtMoney(exp.amount) +
+               '   Category: ' + (exp.category || '—'), 14, 28);
+      if (exp.notes) doc.text(doc.splitTextToSize('Notes: ' + exp.notes, 180), 14, 34);
+
+      if (isPdf || !dataUrl) {
+        doc.setFontSize(9); doc.setTextColor(130);
+        doc.text('"' + (f.filename || 'receipt') + '" is a PDF receipt — not embedded in this document.', 14, 50);
+        doc.setTextColor(0, 0, 0);
+      } else {
+        try {
+          const props = doc.getImageProperties(dataUrl);
+          const maxW = 182, maxH = 235; // usable area below the caption
+          const scale = Math.min(maxW / props.width, maxH / props.height, 1);
+          const w = props.width * scale, h = props.height * scale;
+          doc.addImage(dataUrl, undefined, 14, 44, w, h);
+          attached++;
+        } catch (e) {
+          doc.setFontSize(9); doc.setTextColor(130);
+          doc.text('Could not render "' + (f.filename || 'receipt') + '" (unsupported image format).', 14, 50);
+          doc.setTextColor(0, 0, 0);
+          skipped++;
+        }
+      }
+    }
+  }
+  return { attached, skipped };
+}
+
+// ---- invoice document builder (teal header, spacing, costs-as-of) ----
+function invBuildDoc(v) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const cli = clientById(v.client_id);
+  const items = invItemsFor(v.id);
+  const sub = invSubtotal(items), ohp = invOhp(items), dep = invDeposits(items);
+  const bal = invBalance(items), pctSum = invOhpPctSum(items);
+
+  // ---- upper LEFT: logo + business block ----
+  doc.setFont('times', 'bold'); doc.setFontSize(32);
+  doc.setTextColor(59, 95, 227);
+  doc.text('4G', 14, 26);
+  doc.setTextColor(0, 0, 0);
+  doc.setFontSize(13);
 </script>
 </body>
 </html>
