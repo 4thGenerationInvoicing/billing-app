@@ -4109,6 +4109,69 @@ async function invPreviewButton(id, btn) {
     });
     if (anyChanges) insertPreviewButtons();
   }).observe(document.getElementById('view-invoices'), { childList: true, subtree: true });
-})();</script>
+})();
+const TASK_PRESETS = [
+  ['PM/Lead Carpenter', 85],
+  ['Carpenter', 65],
+  ['Apprentice', 35],
+  ['Apprentice 2', 35]
+];
+
+// ---- enhance the task input row in the Clients view ----
+(function () {
+  // Store original renderClients
+  const origRenderClients = window.renderClients;
+  
+  window.renderClients = function () {
+    origRenderClients.apply(this, arguments);
+    
+    // Inject preset dropdown into each project's "New task name" row
+    document.querySelectorAll('#view-clients input[id^="nt-"]').forEach(taskInput => {
+      const projectId = taskInput.id.slice(3); // strip "nt-"
+      const wrapper = taskInput.parentNode;   // the flex row div
+      
+      // Check if we already added a preset select to this row
+      if (wrapper.querySelector('.task-preset-select')) return;
+      
+      const presetSelect = document.createElement('select');
+      presetSelect.className = 'task-preset-select';
+      presetSelect.style.cssText = 'padding:6px 8px; border-radius:6px; font-size:12px; border:1px solid var(--border); background:#fff; width:auto; flex:none;';
+      
+      const optDefault = document.createElement('option');
+      optDefault.value = '';
+      optDefault.textContent = '— preset —';
+      presetSelect.appendChild(optDefault);
+      
+      TASK_PRESETS.forEach(([label, rate]) => {
+        const opt = document.createElement('option');
+        opt.value = rate + '|' + label;
+        opt.textContent = label + ' — $' + rate + '/hr';
+        presetSelect.appendChild(opt);
+      });
+      
+      presetSelect.onchange = function () {
+        if (!this.value) return;
+        const sep = this.value.indexOf('|');
+        const rate = this.value.slice(0, sep);
+        const label = this.value.slice(sep + 1);
+        // fill task name (only if empty or matches another preset label, so we don't clobber custom typing)
+        if (!taskInput.value || TASK_PRESETS.some(p => p[0] === taskInput.value)) {
+          taskInput.value = label;
+        }
+        // fill rate
+        const rateInput = document.getElementById('ntr-' + projectId);
+        if (rateInput) rateInput.value = rate;
+        this.value = ''; // reset so the same preset can be picked again later
+      };
+      
+      // Insert between task name input and rate input
+      const rateInput = document.getElementById('ntr-' + projectId);
+      if (rateInput) {
+        wrapper.insertBefore(presetSelect, rateInput);
+      }
+    });
+  };
+})();
+</script>
 </body>
 </html>
