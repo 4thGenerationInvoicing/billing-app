@@ -2470,6 +2470,7 @@ function invMdy(d) {
     body.dark .draft-restored { background:rgba(125,147,245,.14); color:#9fb0fa; }
     body.dark #es-newcli { background:#1f2436; }
     body.dark .close-btn:hover { background:#3a2430; }
+    body.dark nav button:not(.active) { color:var(--muted); }
     #theme-toggle { background:rgba(255,255,255,.15); border:none; color:#fff; padding:7px 12px; border-radius:8px; cursor:pointer; font-size:14px; margin-right:8px; }
     body.dark .est-desc textarea, body.dark .est-lines input, body.dark .est-lines select { background:#232736; color:var(--text); }
   `;
@@ -3547,20 +3548,20 @@ function invBuildPdf(v) {
   }
   doc.text(dueTxt, RX, 38);
 
-  // ---- RIGHT COLUMN BELOW: client block, same left edge ----
+  // ---- RIGHT COLUMN BELOW: bold client name aligned with business name ----
   let rightBottom = 43;
   if (cli) {
+    const addrLines = cli.address ? doc.splitTextToSize(cli.address, RXMAX - RX) : [];
+    // label above the bold name; clamps down if it would hit the Due Date line (y~38)
+    const labelY = Math.max(nameY - 9, 43);
+    const nameYc = labelY + 9;    // bold name baseline = business name baseline
     doc.setFont(F, 'normal'); doc.setFontSize(10);
-    doc.text('Invoice for:', RX, nameY);
+    doc.text('Invoice for:', RX, labelY);
     doc.setFont(F, 'bold'); doc.setFontSize(13);
-    doc.text(cli.name || '', RX, nameY + 8);
-    let cy = nameY + 16;
+    doc.text(cli.name || '', RX, nameYc);
+    let cy = nameYc + 7;
     doc.setFont(F, 'normal'); doc.setFontSize(10);
-    if (cli.address) {
-      doc.splitTextToSize(cli.address, RXMAX - RX).forEach(line => {
-        doc.text(line, RX, cy); cy += 6;
-      });
-    }
+    addrLines.forEach(line => { doc.text(line, RX, cy); cy += 6; });
     rightBottom = cy;
   }
 
