@@ -3891,7 +3891,7 @@ function invBuildPdf(v) {
     const props = doc.getImageProperties(INV_LOGO_DATAURL);
     const lw = 38, lh = lw * props.height / props.width;
     doc.addImage(INV_LOGO_DATAURL, 'PNG', 14, 12, lw, lh);
-    nameY = 12 + lh + 10;
+    nameY = 12 + lh + 16;
   } else {
     doc.setFont(F, 'bold'); doc.setFontSize(32);
     doc.setTextColor(59, 95, 227);
@@ -3924,7 +3924,7 @@ function invBuildPdf(v) {
   doc.text(dueTxt, RX, 38);
 
   // ---- RIGHT COLUMN BELOW: client block, vertically centered ----
-let rightBottom = 43;
+ let rightBottom = 43;
   if (cli) {
     const addrLines = cli.address ? doc.splitTextToSize(cli.address, RXMAX - RX) : [];
     // label above the bold name; clamps down if it would hit the Due Date line (y~38)
@@ -3939,7 +3939,6 @@ let rightBottom = 43;
     addrLines.forEach(line => { doc.text(line, RX, cy); cy += 6; });
     rightBottom = cy;
   }
-
   // ---- line item table ----
   const rows = invGroupRows(v, items).map(r => [
     r.type || '',
