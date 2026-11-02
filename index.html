@@ -3553,8 +3553,8 @@ function invBuildPdf(v) {
   if (cli) {
     const addrLines = cli.address ? doc.splitTextToSize(cli.address, RXMAX - RX) : [];
     // label above the bold name; clamps down if it would hit the Due Date line (y~38)
-    const labelY = Math.max(nameY - 9, 43);
-    const nameYc = labelY + 9;    // bold name baseline = business name baseline
+    const labelY = Math.max(nameY - 7, 43);
+    const nameYc = labelY + 7;;    // bold name baseline = business name baseline
     doc.setFont(F, 'normal'); doc.setFontSize(10);
     doc.text('Invoice for:', RX, labelY);
     doc.setFont(F, 'bold'); doc.setFontSize(13);
@@ -3928,8 +3928,8 @@ function invBuildPdf(v) {
   if (cli) {
     const addrLines = cli.address ? doc.splitTextToSize(cli.address, RXMAX - RX) : [];
     // label above the bold name; clamps down if it would hit the Due Date line (y~38)
-    const labelY = Math.max(nameY - 9, 43);
-    const nameYc = labelY + 9;    // bold name baseline = business name baseline
+    const labelY = Math.max(nameY - 7, 43);
+    const nameYc = labelY + 7;;    // bold name baseline = business name baseline
     doc.setFont(F, 'normal'); doc.setFontSize(10);
     doc.text('Invoice for:', RX, labelY);
     doc.setFont(F, 'bold'); doc.setFontSize(13);
@@ -4285,8 +4285,8 @@ function invBuildPdf(v) {
   if (cli) {
     const addrLines = cli.address ? doc.splitTextToSize(cli.address, RXMAX - RX) : [];
     // label above the bold name; clamps down if it would hit the Due Date line (y~38)
-    const labelY = Math.max(nameY - 9, 43);
-    const nameYc = labelY + 9;    // bold name baseline = business name baseline
+    const labelY = Math.max(nameY - 7, 43);
+    const nameYc = labelY + 7;;    // bold name baseline = business name baseline
     doc.setFont(F, 'normal'); doc.setFontSize(10);
     doc.text('Invoice for:', RX, labelY);
     doc.setFont(F, 'bold'); doc.setFontSize(13);
