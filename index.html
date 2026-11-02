@@ -4248,7 +4248,7 @@ function invBuildPdf(v) {
     const props = doc.getImageProperties(INV_LOGO_DATAURL);
     const lw = 38, lh = lw * props.height / props.width;
     doc.addImage(INV_LOGO_DATAURL, 'PNG', 14, 12, lw, lh);
-    nameY = 12 + lh + 10;
+    nameY = 12 + lh + 16;
   } else {
     doc.setFont(F, 'bold'); doc.setFontSize(32);
     doc.setTextColor(59, 95, 227);
