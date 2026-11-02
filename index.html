@@ -712,6 +712,10 @@ function resetExpenseForm() {
   refreshStagedFiles();
 }
 
+async function downscaleImage(file, maxWidth, quality) {
+  ... (the helper you pasted)
+}
+
 function wireExpenseForm() {
   const form = document.getElementById('exp-form');
   const input = document.getElementById('e-file');
@@ -721,13 +725,25 @@ function wireExpenseForm() {
   form.addEventListener('input', saveDraft);
   form.addEventListener('change', saveDraft);
 
-  input.addEventListener('change', () => {
+  input.addEventListener('change', async () => {
     let added = 0, skipped = 0;
     for (const f of input.files) {
       if (isDuplicateStaged(f)) { skipped++; continue; }
+
+      let file = f;
+      if (isImageFile(f.name) && f.type.startsWith('image/')) {
+        try {
+          const downscaled = await downscaleImage(f, 1000, 0.75);
+          file = downscaled;
+        } catch (err) {
+          console.warn('Downscale failed:', err);
+          // fall through with original if downscale fails
+        }
+      }
+
       stagedFiles.push({
-        file: f, name: f.name,
-        previewUrl: (isImageFile(f.name) && f.size < 15000000) ? URL.createObjectURL(f) : null
+        file: file, name: file.name || f.name,
+        previewUrl: (isImageFile(file.name) && file.size < 15000000) ? URL.createObjectURL(file) : null
       });
       added++;
     }
