@@ -3924,19 +3924,19 @@ function invBuildPdf(v) {
   doc.text(dueTxt, RX, 38);
 
   // ---- RIGHT COLUMN BELOW: client block, vertically centered ----
-  let rightBottom = 43;
+let rightBottom = 43;
   if (cli) {
+    const addrLines = cli.address ? doc.splitTextToSize(cli.address, RXMAX - RX) : [];
+    // label above the bold name; clamps down if it would hit the Due Date line (y~38)
+    const labelY = Math.max(nameY - 9, 43);
+    const nameYc = labelY + 9;    // bold name baseline = business name baseline
     doc.setFont(F, 'normal'); doc.setFontSize(10);
-    doc.text('Invoice for:', RX, nameY);
+    doc.text('Invoice for:', RX, labelY);
     doc.setFont(F, 'bold'); doc.setFontSize(13);
-    doc.text(cli.name || '', RX, nameY + 8);
-    let cy = nameY + 16;
+    doc.text(cli.name || '', RX, nameYc);
+    let cy = nameYc + 7;
     doc.setFont(F, 'normal'); doc.setFontSize(10);
-    if (cli.address) {
-      doc.splitTextToSize(cli.address, RXMAX - RX).forEach(line => {
-        doc.text(line, RX, cy); cy += 6;
-      });
-    }
+    addrLines.forEach(line => { doc.text(line, RX, cy); cy += 6; });
     rightBottom = cy;
   }
 
@@ -4284,17 +4284,17 @@ function invBuildPdf(v) {
   // ---- RIGHT COLUMN BELOW: client block, vertically centered ----
   let rightBottom = 43;
   if (cli) {
+    const addrLines = cli.address ? doc.splitTextToSize(cli.address, RXMAX - RX) : [];
+    // label above the bold name; clamps down if it would hit the Due Date line (y~38)
+    const labelY = Math.max(nameY - 9, 43);
+    const nameYc = labelY + 9;    // bold name baseline = business name baseline
     doc.setFont(F, 'normal'); doc.setFontSize(10);
-    doc.text('Invoice for:', RX, nameY);
+    doc.text('Invoice for:', RX, labelY);
     doc.setFont(F, 'bold'); doc.setFontSize(13);
-    doc.text(cli.name || '', RX, nameY + 8);
-    let cy = nameY + 16;
+    doc.text(cli.name || '', RX, nameYc);
+    let cy = nameYc + 7;
     doc.setFont(F, 'normal'); doc.setFontSize(10);
-    if (cli.address) {
-      doc.splitTextToSize(cli.address, RXMAX - RX).forEach(line => {
-        doc.text(line, RX, cy); cy += 6;
-      });
-    }
+    addrLines.forEach(line => { doc.text(line, RX, cy); cy += 6; });
     rightBottom = cy;
   }
 
