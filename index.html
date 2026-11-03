@@ -4216,6 +4216,70 @@ const TASK_PRESETS = [
     });
   };
 })();
+// ---------- client form draft (survives browser tab discard/reload) ----------
+const CLIENT_DRAFT_KEY = 'clientDraft';
+let clientDraftShown = false;
+
+function clientDraftSave() {
+  const g = id => document.getElementById(id);
+  if (!g('c-name')) return;
+  const draft = {
+    name: g('c-name').value, email: g('c-email').value,
+    rate: g('c-rate').value, address: g('c-address').value,
+    editingId: editingClientId, savedAt: Date.now()
+  };
+  try { localStorage.setItem(CLIENT_DRAFT_KEY, JSON.stringify(draft)); } catch (e) {}
+}
+function clientDraftClear() {
+  try { localStorage.removeItem(CLIENT_DRAFT_KEY); } catch (e) {}
+  clientDraftShown = false;
+}
+function clientDraftRestore() {
+  const g = id => document.getElementById(id);
+  if (!g('c-name')) return;
+  let d;
+  try { d = JSON.parse(localStorage.getItem(CLIENT_DRAFT_KEY)); } catch (e) { return; }
+  if (!d || !d.savedAt) return;
+  if (Date.now() - d.savedAt > 7*24*3600*1000) { clientDraftClear(); return; }       // week-old drafts die
+  if (d.editingId && !clients.find(c => c.id === d.editingId)) { clientDraftClear(); return; }
+  if (!d.name && !d.email && !d.rate && !d.address && !d.editingId) return;          // nothing to restore
+  if (d.editingId) { document.getElementById('c-cancel').classList.remove('hidden'); }
+  if (d.name) g('c-name').value = d.name;
+  if (d.email) g('c-email').value = d.email;
+  if (d.rate) g('c-rate').value = d.rate;
+  if (d.address) g('c-address').value = d.address;
+  if (!clientDraftShown) {
+    clientDraftShown = true;
+    const card = document.getElementById('c-name').closest('.card');
+    if (card) {
+      const notice = document.createElement('div');
+      notice.className = 'draft-restored';
+      notice.style.marginBottom = '10px';
+      notice.textContent = '↩ Restored your unsaved client info (tab was reloaded).';
+      card.insertBefore(notice, card.children[1]);
+    }
+  }
+}
+(function () {
+  const orig = window.renderClients;
+  if (typeof orig !== 'function') return;
+  window.renderClients = function () {
+    orig.apply(this, arguments);
+    const card = document.getElementById('c-name') && document.getElementById('c-name').closest('.card');
+    if (card) {
+      card.addEventListener('input', clientDraftSave);
+      card.addEventListener('change', clientDraftSave);
+    }
+    clientDraftRestore();
+  };
+  const origClear = window.clearClientForm;
+  if (typeof origClear === 'function') window.clearClientForm = function () { clientDraftClear(); return origClear.apply(this, arguments); };
+  const origFill = window.fillClientForm;
+  if (typeof origFill === 'function') window.fillClientForm = function (id) { clientDraftClear(); return origFill.apply(this, arguments); };
+})();
+// persist the instant the page is hidden — Chrome/Android tab discard
+document.addEventListener('visibilitychange', () => { if (document.hidden) clientDraftSave(); });
+window.addEventListener('pagehide', clientDraftSave);
 let INV_BASK_R64 = null;   // Regular TTF as base64
 let INV_BASK_B64 = null;   // Bold TTF as base64
 let INV_PDF_FONT = 'times'; // switches to 'LibreBaskerville' once loaded
