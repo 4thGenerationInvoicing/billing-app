@@ -1310,7 +1310,7 @@ function renderEstList() {
         <strong>#${esc(e.estimate_number)} <span style="color:var(--muted);font-weight:400">·</span> ${esc(cli ? cli.name : '—')}</strong>
         <span class="row-actions">
           <button class="btn tiny secondary" onclick="estOpenEdit('${e.id}')">Edit</button>
-          <button class="btn tiny secondary" onclick="printEstimate('${e.id}')">🖨 Print</button>
+          <button class="btn tiny secondary" onclick="printEstimate('${e.id}')">🖨 Print</button><button class="btn tiny secondary" title="Email estimate" onclick="estEmailButton('${e.id}')">✉</button>
           <button class="btn tiny secondary" onclick="deleteEstimate('${e.id}')">✕</button>
         </span>
       </div>
@@ -1366,7 +1366,7 @@ function renderEstEditor() {
     <div class="view-title">${isNew ? 'New Estimate #' + nextEstimateNumber() : 'Edit Estimate #' + esc(cur.estimate_number)}
       <span class="row-actions">
         <button class="btn small secondary" onclick="estBackToList()">← Back to list</button>
-        ${!isNew ? `<button class="btn small secondary" onclick="printEstimate('${cur.id}')">🖨 Print</button>` : ''}
+        ${!isNew ? `<button class="btn small secondary" onclick="printEstimate('${cur.id}')">🖨 Print</button><button class="btn small secondary" title="Email estimate" onclick="estEmailButton('${cur.id}')">✉</button>` : ''}
       </span>
     </div>
 
@@ -4280,6 +4280,61 @@ function clientDraftRestore() {
 // persist the instant the page is hidden — Chrome/Android tab discard
 document.addEventListener('visibilitychange', () => { if (document.hidden) clientDraftSave(); });
 window.addEventListener('pagehide', clientDraftSave);
+// ---------- email buttons (Proton Mail compose) ----------
+const EMAIL_SIGNATURE = 'Thank you,\n4th Generation Builders\nCSL-083816 / HIC-160924';
+
+function mailtoLink(to, subject, body) {
+  const e = s => encodeURIComponent(String(s || ''));
+  return 'mailto:' + e(to) + '?subject=' + e(subject) + '&body=' + e(body);
+}
+function openMailto(href) {
+  const a = document.createElement('a');
+  a.href = href;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+async function invEmailButton(id, btn) {
+  const v = invoiceById(id); if (!v) return;
+  const cli = clientById(v.client_id);
+  if (!cli || !cli.email) { toast('No email saved for this client — add it on the Clients tab'); return; }
+  const items = invItemsFor(v.id);
+  const subject = 'Invoice #' + v.invoice_number + ' — 4th Generation Builders';
+  const body = 'Hello,\n\nAttached is invoice #' + v.invoice_number + '.' +
+    (v.requested_amount != null ? ' Amount requested: ' + invMoney(v.requested_amount) + '.'
+                                 : ' Balance due: ' + invMoney(invBalance(items)) + '.') +
+    '\n\n' + EMAIL_SIGNATURE;
+  let lbl = null;
+  if (btn) { lbl = btn.textContent; btn.disabled = true; btn.textContent = '…'; }
+  try {
+    await invLoadPdfLibs();
+    triggerDownload(await invBuildPdfWithReceipts(v), 'invoice-' + v.invoice_number + '.pdf');
+    openMailto(mailtoLink(cli.email, subject, body));
+    toast('PDF downloaded — drag it into the compose window');
+  } catch (err) {
+    toast('PDF failed: ' + (err && err.message ? err.message : err));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = lbl || '✉'; }
+  }
+}
+
+function estEmailButton(id) {
+  const es = estimates.find(x => x.id === id); if (!es) return;
+  const cli = clientById(es.client_id);
+  if (!cli || !cli.email) { toast('No email saved for this client — add it on the Clients tab'); return; }
+  const subject = 'Estimate #' + es.estimate_number + ' — ' + (es.title || '4th Generation Builders');
+  const body = 'Hello,\n\nAttached is estimate #' + es.estimate_number +
+    ' for ' + invMoney(estGrandTotal(estItemsFor(id))) + '.' +
+    '\n\n' + EMAIL_SIGNATURE;
+  openMailto(mailtoLink(cli.email, subject, body));
+  toast('Tip: 🖨 Print → Save as PDF first, then attach that file');
+}
 let INV_BASK_R64 = null;   // Regular TTF as base64
 let INV_BASK_B64 = null;   // Bold TTF as base64
 let INV_PDF_FONT = 'times'; // switches to 'LibreBaskerville' once loaded
