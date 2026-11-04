@@ -1857,7 +1857,7 @@ function renderInvHome() {
         <strong>#${esc(v.invoice_number)} <span style="color:var(--muted);font-weight:400">·</span> ${esc(cli ? cli.name : '—')}${p ? ' — ' + esc(p.name) : ''}</strong>
         <span class="row-actions">
           <button class="btn tiny secondary" onclick="invOpenEdit('${v.id}')">Open</button>
-          <button class="btn tiny secondary" onclick="invPdfButton('${v.id}', this)">📄 PDF</button>
+          <button class="btn tiny secondary" onclick="invPdfButton('${v.id}', this)">📄 PDF</button><button class="btn tiny secondary" title="Email invoice" onclick="invEmailButton('${v.id}', this)">✉</button>
           <button class="btn tiny secondary" onclick="invDelete('${v.id}')">✕</button>
         </span>
       </div>
@@ -1993,7 +1993,7 @@ function renderInvEditor() {
     <div class="view-title">Invoice #${esc(v.invoice_number)} ${v.title ? '— ' + esc(v.title) : ''}
       <span class="row-actions">
         <button class="btn small secondary" onclick="invBackToList()">← Back</button>
-        <button class="btn small secondary" onclick="invPdfButton('${v.id}', this)">📄 PDF / Share</button>
+        <button class="btn small secondary" onclick="invPdfButton('${v.id}', this)">📄 PDF / Share</button><button class="btn small secondary" title="Email invoice" onclick="invEmailButton('${v.id}', this)">✉</button>
       </span>
     </div>
 
