@@ -2819,10 +2819,9 @@ async function invPdfButton(id, btn) {
   }
 }
 function invOhpBase(items) {
-  const dep = Math.abs(invDeposits(items));  // total deposits received, as a positive number
-  const cost = invSubtotal(items) + dep;     // deposits are stored negative — adding their value back strips them out
-  if (cost >= 0) return cost;                // normal case: O&P applies to costs only
-  return Math.max(0, dep + cost);            // costs ran negative: subtract the shortfall from the deposits, then apply O&P
+  // Base = deposits + full subtotal (subtotal includes deposits as negatives),
+  // which algebraically equals job costs excluding deposits. Floored at zero.
+  return Math.max(0, invSubtotal(items));
 }
 function invOhp(items) {
   return (invOhpPctSum(items) / 100) * invOhpBase(items);
