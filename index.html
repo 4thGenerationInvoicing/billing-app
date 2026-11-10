@@ -1310,7 +1310,7 @@ function renderEstList() {
         <strong>#${esc(e.estimate_number)} <span style="color:var(--muted);font-weight:400">·</span> ${esc(cli ? cli.name : '—')}</strong>
         <span class="row-actions">
           <button class="btn tiny secondary" onclick="estOpenEdit('${e.id}')">Open</button>
-          <button class="btn tiny secondary" title="Preview" onclick="estPreviewButton('${e.id}', this)">👁</button><button class="btn tiny secondary" onclick="estPdfButton<button class="btn tiny secondary" title="Email estimate" onclick="estEmailButton('${e.id}')">✉</button>
+          <button class="btn tiny secondary" title="Preview" onclick="estPreviewButton('${e.id}', this)">👁</button><button class="btn tiny secondary" onclick="estPdfButton('${e.id}', this)">📄 PDF</button><button class="btn tiny secondary" title="Email estimate" onclick="estEmailButton('${e.id}')">✉</button>
           <button class="btn tiny secondary" onclick="deleteEstimate('${e.id}')">✕</button>
         </span>
       </div>
@@ -1366,7 +1366,7 @@ function renderEstEditor() {
     <div class="view-title">${isNew ? 'New Estimate #' + nextEstimateNumber() : 'Edit Estimate #' + esc(cur.estimate_number)}
       <span class="row-actions">
         <button class="btn small secondary" onclick="estBackToList()">← Back to list</button>
-        ${!isNew ? `<button class="btn small secondary" title="Preview" onclick="estPreviewButton('${cur.id}', this)">👁 Preview</button><button class="btn small secondary" onclick="e<button class="btn small secondary" title="Email estimate" onclick="estEmailButton('${cur.id}')">✉</button>` : ''}
+        ${!isNew ? `<button class="btn small secondary" title="Preview" onclick="estPreviewButton('${cur.id}', this)">👁 Preview</button><button class="btn small secondary" onclick="estPdfButton('${cur.id}', this)">📄 PDF</button><button class="btn small secondary" title="Email estimate" onclick="estEmailButton('${cur.id}')">✉</button>` : ''}
       </span>
     </div>
 
