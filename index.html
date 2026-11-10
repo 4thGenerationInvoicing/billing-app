@@ -1309,8 +1309,8 @@ function renderEstList() {
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;flex-wrap:wrap;gap:6px">
         <strong>#${esc(e.estimate_number)} <span style="color:var(--muted);font-weight:400">·</span> ${esc(cli ? cli.name : '—')}</strong>
         <span class="row-actions">
-          <button class="btn tiny secondary" onclick="estOpenEdit('${e.id}')">Edit</button>
-          <button class="btn tiny secondary" onclick="printEstimate('${e.id}')">🖨 Print</button><button class="btn tiny secondary" title="Email estimate" onclick="estEmailButton('${e.id}')">✉</button>
+          <button class="btn tiny secondary" onclick="estOpenEdit('${e.id}')">Open</button>
+          <button class="btn tiny secondary" title="Preview" onclick="estPreviewButton('${e.id}', this)">👁</button><button class="btn tiny secondary" onclick="estPdfButton<button class="btn tiny secondary" title="Email estimate" onclick="estEmailButton('${e.id}')">✉</button>
           <button class="btn tiny secondary" onclick="deleteEstimate('${e.id}')">✕</button>
         </span>
       </div>
@@ -1366,7 +1366,7 @@ function renderEstEditor() {
     <div class="view-title">${isNew ? 'New Estimate #' + nextEstimateNumber() : 'Edit Estimate #' + esc(cur.estimate_number)}
       <span class="row-actions">
         <button class="btn small secondary" onclick="estBackToList()">← Back to list</button>
-        ${!isNew ? `<button class="btn small secondary" onclick="printEstimate('${cur.id}')">🖨 Print</button><button class="btn small secondary" title="Email estimate" onclick="estEmailButton('${cur.id}')">✉</button>` : ''}
+        ${!isNew ? `<button class="btn small secondary" title="Preview" onclick="estPreviewButton('${cur.id}', this)">👁 Preview</button><button class="btn small secondary" onclick="e<button class="btn small secondary" title="Email estimate" onclick="estEmailButton('${cur.id}')">✉</button>` : ''}
       </span>
     </div>
 
@@ -1513,7 +1513,7 @@ ${esc(l.description)}</textarea></td>
         <td><input type="number" step="0.01" inputmode="decimal" value="${l.unit_price ?? ''}" oninput="estLineInput(${i}, 'unit_price', this.value)"></td>
         <td class="est-amt" data-i="${i}" style="text-align:right;font-weight:600;white-space:nowrap">${fmtMoney(amt)}</td>
         <td style="text-align:center"><input type="checkbox" style="width:auto" ${l.is_percent ? 'checked' : ''} onchange="estTogglePct(${i}, this.checked)"></td>
-        <td style="text-align:right"><button class="btn tiny secondary" onclick="estDelLine(${i})">✕</button></td>
+        <td style="text-align:right;white-space:nowrap"><button class="btn tiny secondary" onclick="estMoveLine(${i},-1)">▲</button><button class="btn tiny secondary" onclick="estMoveLine(${i},1)">▼</button><button class="btn tiny secondary" onclick="estDelLine(${i})">✕</button></td>
       </tr>`;
     }).join('')}
     </tbody>
@@ -3367,6 +3367,272 @@ function estInjectOhpBox() {
     estInjectOhpBox();
   };
 })();
+// ==================================================================
+// ESTIMATE PDF — same engine as invoices (logo, Baskerville, grid),
+// preview + direct-open PDF (no share sheet), OH&P % box in editor
+// ==================================================================
+function estBuildPdf(e) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  invApplyFonts(doc);
+  const F = INV_PDF_FONT;
+  const cli = clientById(e.client_id);
+  const items = estItemsFor(e.id);
+  const sub = estSubtotal(items);
+  const pctRows = items.filter(l => l.is_percent);
+  const pctSum = pctRows.reduce((s, l) => s + Number(l.unit_price || 0), 0);
+  const ohp = estPercentSum(items);
+  const RX = 134, RXMAX = 196;
+
+  // ---- LEFT: logo (or 4G fallback) + business block (identical to invoice) ----
+  let nameY;
+  if (INV_LOGO_DATAURL) {
+    const props = doc.getImageProperties(INV_LOGO_DATAURL);
+    const lw = 38, lh = lw * props.height / props.width;
+    doc.addImage(INV_LOGO_DATAURL, 'PNG', 14, 12, lw, lh);
+    nameY = 12 + lh + 16;
+  } else {
+    doc.setFont(F, 'bold'); doc.setFontSize(32);
+    doc.setTextColor(59, 95, 227);
+    doc.text('4G', 14, 28);
+    nameY = 41;
+  }
+  doc.setTextColor(0, 0, 0);
+  doc.setFont(F, 'bold'); doc.setFontSize(13);
+  doc.text(INV_FROM_NAME, 14, nameY);
+  doc.setFont(F, 'normal'); doc.setFontSize(10);
+  let by = nameY + 8;
+  INV_FROM_LINES.forEach(line => { doc.text(line, 14, by); by += 6; });
+  doc.text(INV_FROM_CREDS, 14, by);
+  by += 4;
+  const leftBottom = by;
+
+  // ---- RIGHT COLUMN TOP: estimate number + dates ----
+  doc.setFont(F, 'bold'); doc.setFontSize(16);
+  doc.text('Estimate #' + e.estimate_number, RX, 24);
+  doc.setFont(F, 'normal'); doc.setFontSize(11);
+  doc.text('Issue Date: ' + invMdy(e.issue_date), RX, 32);
+  if (e.valid_until) {
+    const validTxt = 'Valid until: ' + invMdy(e.valid_until);
+    let validSize = 11;
+    doc.setFontSize(validSize);
+    while (validSize > 8 && doc.getTextWidth(validTxt) > (RXMAX - RX)) {
+      validSize -= 0.5;
+      doc.setFontSize(validSize);
+    }
+    doc.text(validTxt, RX, 38);
+  }
+
+  // ---- RIGHT COLUMN BELOW: client block (label aligned with business name) ----
+  let rightBottom = 43;
+  if (cli) {
+    const addrLines = cli.address ? doc.splitTextToSize(cli.address, RXMAX - RX) : [];
+    const labelY = Math.max(nameY - 7, 43);
+    const nameYc = labelY + 7; // bold name baseline = business name baseline
+    doc.setFont(F, 'normal'); doc.setFontSize(10);
+    doc.text('Estimate for:', RX, labelY);
+    doc.setFont(F, 'bold'); doc.setFontSize(13);
+    doc.text(cli.name || '', RX, nameYc);
+    let cy = nameYc + 7;
+    doc.setFont(F, 'normal'); doc.setFontSize(10);
+    addrLines.forEach(line => { doc.text(line, RX, cy); cy += 6; });
+    rightBottom = cy;
+  }
+
+  // ---- line item table (same five columns, same styling as the invoice) ----
+  const rows = items.filter(l => !l.is_percent).map(l => [
+    l.item_type || '',
+    l.description || '',
+    l.quantity != null ? String(Number(l.quantity).toFixed(2).replace(/\.?0+$/, '')) + (l.unit ? ' ' + l.unit : '') : '',
+    l.unit_price != null ? invMoney(l.unit_price) : '',
+    invMoney(estLineAmount(l, sub)),
+  ]);
+  if (pctSum) {
+    rows.push(['', 'Overhead & Profit', String(pctSum) + '%', invMoney(sub), invMoney(ohp)]);
+  }
+
+  const startY = Math.max(leftBottom, rightBottom) + 12;
+  doc.autoTable({
+    startY: startY,
+    head: [['Item Type', 'Description', 'Quantity', 'Unit Price', 'Amount']],
+    body: rows,
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 2.5, valign: 'top', font: F,
+              lineColor: [70, 75, 95], lineWidth: 0.3 },
+    headStyles: { fillColor: [59, 95, 227], textColor: [255, 255, 255],
+                  font: F, fontStyle: 'bold', fontSize: 8.5, lineWidth: 0.3, lineColor: [70, 75, 95] },
+    alternateRowStyles: { fillColor: [244, 246, 250] },
+    columnStyles: {
+      0: { cellWidth: 'auto' },
+      1: { cellWidth: 'auto', halign: 'left' },
+      2: { cellWidth: 'auto', halign: 'right' },
+      3: { cellWidth: 'auto', halign: 'right' },
+      4: { cellWidth: 'auto', halign: 'right' },
+    },
+    didParseCell: data => {
+      if (data.section === 'body' && data.column.index === 4) {
+        const txt = String(data.cell.raw || '');
+        if (txt.indexOf('-') !== -1) data.cell.styles.textColor = [46, 158, 91];
+      }
+    },
+  });
+
+  // ---- bottom block: colons aligned on one vertical line ----
+  let y = doc.lastAutoTable.finalY + 12;
+  const tx = 196;
+  const lines = [
+    { label: 'Subtotal:', money: invMoney(sub), size: 11, bold: false, color: null },
+    { label: 'Total:', money: invMoney(sub + ohp), size: 14, bold: true, color: null },
+  ];
+  doc.setFont(F, 'normal'); doc.setFontSize(11);
+  let maxNumW = 0;
+  lines.forEach(L => {
+    doc.setFontSize(L.size);
+    maxNumW = Math.max(maxNumW, doc.getTextWidth(L.money));
+  });
+  const colonX = tx - maxNumW - 8;
+  lines.forEach(L => {
+    doc.setFont(F, L.bold ? 'bold' : 'normal'); doc.setFontSize(L.size);
+    doc.setTextColor(0, 0, 0);
+    doc.text(L.label, colonX, y, { align: 'right' });
+    if (L.color) doc.setTextColor(L.color[0], L.color[1], L.color[2]);
+    doc.text(L.money, tx, y, { align: 'right' });
+    doc.setTextColor(0, 0, 0);
+    y += L.size >= 14 ? 10 : 8;
+  });
+
+  doc.setFont(F, 'normal'); doc.setFontSize(10); y += 2;
+  if (e.notes) {
+    doc.setFontSize(10);
+    doc.text(doc.splitTextToSize(e.notes, 180), 14, y);
+  }
+
+  // ---- page footers ----
+  const pages = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setFont(F, 'normal'); doc.setFontSize(8); doc.setTextColor(130);
+    doc.text('Page ' + i + ' of ' + pages, 196, 290, { align: 'right' });
+  }
+  doc.setTextColor(0, 0, 0);
+
+  return doc.output('blob');
+}
+
+// ---- 👁 Preview: opens the PDF in a new tab, exactly like invoices ----
+async function estPreviewButton(id, btn) {
+  const e = estimates.find(x => x.id === id); if (!e) return;
+  let lbl = null;
+  if (btn) { lbl = btn.textContent; btn.disabled = true; btn.textContent = 'Building…'; }
+  try {
+    await invLoadPdfLibs();
+    const blob = estBuildPdf(e);
+    const url = URL.createObjectURL(blob);
+    const win = window.open(url, '_blank');
+    if (!win) { toast('Popup blocked? Click address-bar lock → allow popups'); }
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (err) {
+    toast('Preview failed: ' + (err && err.message ? err.message : err));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = lbl || '👁'; }
+  }
+}
+
+// ---- 📄 PDF: downloads the finished file directly — no share/copy sheet ----
+async function estPdfButton(id, btn) {
+  const e = estimates.find(x => x.id === id); if (!e) return;
+  let lbl = null;
+  if (btn) { lbl = btn.textContent; btn.disabled = true; btn.textContent = 'Building…'; }
+  try {
+    await invLoadPdfLibs();
+    triggerDownload(estBuildPdf(e), 'estimate-' + e.estimate_number + '.pdf');
+    toast('PDF downloaded');
+  } catch (err) {
+    toast('PDF failed: ' + (err && err.message ? err.message : err));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = lbl || '📄 PDF'; }
+  }
+}
+
+// old 🖨 button label now shows the preview instead of the browser print dialog
+window.printEstimate = function (id, btn) { return estPreviewButton(id, btn); };
+
+// ---- ✉ downloads the PDF, then opens Proton Mail compose ----
+window.estEmailButton = async function (id, btn) {
+  const es = estimates.find(x => x.id === id); if (!es) return;
+  const cli = clientById(es.client_id);
+  if (!cli || !cli.email) { toast('No email saved for this client — add it on the Clients tab'); return; }
+  const subject = 'Estimate #' + es.estimate_number + ' — ' + (es.title || '4th Generation Builders');
+  const body = 'Hello,\n\nAttached is estimate #' + es.estimate_number +
+    ' for ' + invMoney(estGrandTotal(estItemsFor(id))) + '.\n\n' + EMAIL_SIGNATURE;
+  let lbl = null;
+  if (btn) { lbl = btn.textContent; btn.disabled = true; btn.textContent = '…'; }
+  try {
+    await invLoadPdfLibs();
+    triggerDownload(estBuildPdf(es), 'estimate-' + es.estimate_number + '.pdf');
+    openMailto(mailtoLink(cli.email, subject, body));
+    toast('PDF downloaded — drag it into the compose window');
+  } catch (err) {
+    toast('PDF failed: ' + (err && err.message ? err.message : err));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = lbl || '✉'; }
+  }
+};
+
+// ---- OH&P % box at the top of the estimate editor (mirrors the invoice) ----
+let estOhpPct = 0;
+function estOhpSyncFromLines() {
+  const rows = estLines.filter(l => l.is_percent);
+  estOhpPct = rows.length ? rows.reduce((s, l) => s + Number(l.unit_price || 0), 0) : 0;
+}
+function estOhpLive(val) {
+  const pct = val === '' ? 0 : (parseFloat(val) || 0);
+  estOhpPct = pct;
+  for (let i = estLines.length - 1; i >= 0; i--) if (estLines[i].is_percent) estLines.splice(i, 1);
+  if (pct > 0) {
+    estLines.push({ item_type: 'Overhead & Profit', description: 'Overhead & Profit',
+      quantity: 1, unit: '', unit_price: pct, is_percent: true });
+  }
+  estRenderLines();
+}
+function estInjectOhpBox() {
+  const stSel = document.getElementById('es-status');
+  if (!stSel || document.getElementById('es-ohppct')) return;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = '<label>OH&amp;P (% of subtotal)</label>' +
+    '<input type="number" id="es-ohppct" step="0.1" inputmode="decimal" placeholder="10" value="' + (estOhpPct || '') + '">';
+  stSel.parentNode.appendChild(wrap);
+  wrap.querySelector('input').addEventListener('input', function () { estOhpLive(this.value); });
+}
+(function () {
+  const orig = window.renderEstEditor;
+  if (typeof orig !== 'function') return;
+  window.renderEstEditor = function () {
+    estOhpSyncFromLines();
+    orig.apply(this, arguments);
+    estInjectOhpBox();
+  };
+})();
+// ---------- O&P always sorts to the last line, everywhere ----------
+function estSortOhpLast() {
+  const pct = estLines.filter(l => l.is_percent);
+  if (!pct.length) return;
+  estLines = estLines.filter(l => !l.is_percent).concat(pct);
+}
+(function () {
+  const orig = window.estRenderLines;
+  if (typeof orig !== 'function') return;
+  window.estRenderLines = function () { estSortOhpLast(); return orig.apply(this, arguments); };
+})();
+// ---------- ▲▼ move lines (O&P row stays pinned last) ----------
+function estMoveLine(i, dir) {
+  if (estLines[i] && estLines[i].is_percent) return;          // O&P can't move
+  const j = i + dir;
+  if (j < 0 || j >= estLines.length) return;
+  if (dir === 1 && estLines[j].is_percent) return;             // nothing moves below O&P
+  const tmp = estLines[i]; estLines[i] = estLines[j]; estLines[j] = tmp;
+  estRenderLines();
+}
 let INV_BASK_R64 = null;   // Regular TTF as base64
 let INV_BASK_B64 = null;   // Bold TTF as base64
 let INV_PDF_FONT = 'times'; // switches to 'LibreBaskerville' once loaded
